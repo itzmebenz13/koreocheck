@@ -291,59 +291,50 @@ def _product_detail_params(goods_id: str, country: str = "PH") -> dict:
     }
 
 
+def api_product_static(goods_id: str, country: str = "PH") -> dict:
+    """
+    Fetch STATIC product data — name, images, SKUs, base price.
+    Uses get_goods_detail_static_data_v2 which works for ALL products
+    (confirmed from user captures — no 836000 issues).
+    """
+    params = {
+        "priorityMallType":       "1",
+        "trendingId":             "",
+        "sceneFromPage":          "",
+        "goods_id":               goods_id,
+        "goodsPicAbAbt":          "A",
+        "isHidePaidMemberInfo":   "0",
+        "isHideEstimatePriceInfo": "",
+        "isAppointMall":          "0",
+        "mall_code":              "1",
+        "isUserSelectedMallCode": "0",
+        "underPriceShowAbtParam": "B",
+        "sceneFlag":              "",
+        "isShowMall":             "0",
+        "abt_branch_ids":         "",
+        "isPaidMember":           "0",
+        "isHideNotSatisfied":     "",
+        "isSizeGatherTag":        "",
+        "sourceFrom":             "goods_detail",
+    }
+    resp = rq.get(f"{API_HOST}/product/get_goods_detail_static_data_v2",
+                  params=params, headers=headers(country), timeout=15, verify=False)
+    return resp.json()
+
+
 def api_product_detail(goods_id: str, country: str = "PH") -> dict:
     """
-    Fetch realtime product data (price + applicable coupons).
-    All params — including empty ones — must match the original app request exactly.
-    If the first attempt returns 836000, retries once without optional params.
+    Fetch REALTIME product data — coupons (cmpCouponInfo), live stock, promotions.
+    Uses get_goods_detail_realtime_data.
+    May return 836000 for some products — callers must handle gracefully.
     """
     params = _product_detail_params(goods_id, country)
-    resp   = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
-                    params=params, headers=headers(country), timeout=15, verify=False)
-    result = resp.json()
-
-    # Retry attempts when 836000 — try different mallCode values
-    if str(result.get("code")) == "836000":
-        tz = TIMEZONE_MAP.get(country.upper(), "Asia/Manila")
-
-        for mall_code in ["0", "", "2"]:
-            attempt = dict(params)
-            attempt["mallCode"] = mall_code
-            attempt["isUserSelectedMallCode"] = "1" if mall_code else "0"
-            try:
-                r2 = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
-                            params=attempt, headers=headers(country),
-                            timeout=15, verify=False).json()
-                if str(r2.get("code")) == "0":
-                    return r2
-            except Exception:
-                pass
-
-        # ── Fallback A: strip all optional security headers
-        for drop in [
-            ["x-gw-auth", "anti-in"],
-            ["x-gw-auth", "anti-in", "x-cs-random"],
-            ["x-gw-auth", "anti-in", "x-cs-random", "armortoken"],
-            ["x-gw-auth", "anti-in", "x-cs-random", "armortoken", "x-ad-flag"],
-        ]:
-            try:
-                h_test = dict(headers(country))
-                for k in drop:
-                    h_test.pop(k, None)
-                r_t = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
-                             params=params, headers=h_test,
-                             timeout=15, verify=False).json()
-                if str(r_t.get("code")) == "0":
-                    return r_t
-            except Exception:
-                pass
-
-        # ── Fallback B: try the SHEIN web API (m.shein.com) — different auth model
-        web_result = _try_web_product_detail(goods_id, country)
-        if web_result and str(web_result.get("code")) == "0":
-            return web_result
-
-    return result
+    try:
+        resp = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
+                      params=params, headers=headers(country), timeout=12, verify=False)
+        return resp.json()
+    except Exception:
+        return {"code": "error", "msg": "Request failed"}
 
 
 def _try_web_product_detail(goods_id: str, country: str = "PH") -> dict | None:
@@ -773,8 +764,11 @@ def _item_info_via_atc(goods_id: str, country: str) -> tuple:
 @app.route("/api/item-info", methods=["POST"])
 def item_info():
     """
-    Quick lookup: return item name, image, price, variants, and applicable coupons.
-    Does NOT add to cart.
+    Product lookup using a two-step approach:
+    1. STATIC endpoint (get_goods_detail_static_data_v2) — works for ALL products.
+       Returns: name, image, price, SKUs/variants.
+    2. REALTIME endpoint (get_goods_detail_realtime_data) — tried for coupons only.
+       Returns: cmpCouponInfo. May fail for some products (836000) — that's OK.
     """
     body     = request.get_json(silent=True) or {}
     raw      = body.get("query", "").strip()
@@ -784,104 +778,113 @@ def item_info():
     if not goods_id:
         return jsonify({"error": "Could not extract a product ID from your input."}), 400
 
+    currency = CURRENCY_MAP.get(country, "PHP")
+    symbol   = SYMBOL_MAP.get(currency, "₱")
+
+    # ── STEP 1: Static endpoint — reliable for all products ──────────────────
     try:
-        detail = api_product_detail(goods_id, country)
+        static = api_product_static(goods_id, country)
     except Exception as exc:
         return jsonify({"error": f"Request failed: {exc}"}), 502
 
-    if str(detail.get("code")) != "0":
-        shein_code = str(detail.get("code", "?"))
+    if str(static.get("code")) != "0":
+        msg = static.get("msg") or f"Product not found (code={static.get('code')})"
+        return jsonify({"error": msg}), 400
 
-        # ── 836000 fallback: use add-to-cart probe to get basic product info
-        # The ATC endpoint works even when product detail realtime is restricted.
-        # We get name, image, price, sku — just no coupon data.
-        if shein_code == "836000":
-            if ATC_GW_AUTH and ATC_ANTI_IN:
-                return _item_info_via_atc(goods_id, country)
-            return jsonify({"error": "Session expired. Please refresh GW_AUTH, ANTI_IN, CS_RANDOM, RULEIDS in Railway from a fresh SHEIN app product-detail capture."}), 400
-
-        shein_msg = detail.get("msg") or detail.get("message") or ""
-        return jsonify({"error": shein_msg or f"SHEIN API error (code={shein_code})"}), 400
-
-    info      = detail.get("info") or {}
-    sale_raw  = info.get("sale_price") or {}
-    currency  = CURRENCY_MAP.get(country, "PHP")
-    symbol    = SYMBOL_MAP.get(currency, "₱")
+    sinfo      = static.get("info") or {}
+    sale_raw   = sinfo.get("sale_price") or sinfo.get("retail_price") or {}
     sale_price = parse_amount(sale_raw)
+    prod_name  = sinfo.get("goods_name") or f"Product #{goods_id}"
+    prod_image = sinfo.get("goods_img")  or sinfo.get("original_img") or ""
+    is_on_sale = sinfo.get("is_on_sale") == "1"
+    stock      = sinfo.get("stock", "?")
 
-    # Coupons applicable to this product from owner's wallet
-    coupon_list = (info.get("cmpCouponInfo") or {}).get("cmpCouponInfoList") or []
-    coupons = []
-    for c in coupon_list:
-        if c.get("isValid") != 1:
-            continue
-        for rule in (c.get("rules") or []):
-            disc_str      = rule.get("discount", "")
-            thresh_str    = rule.get("threshold", "No Min. Buy")
-            min_order     = parse_threshold(thresh_str)
-            calc          = calc_coupon_discount(disc_str, sale_price, min_order)
-            is_free_ship  = (c.get("businessExtension") or {}).get("productDetail", {}).get("isFreeShipping") == "1"
-            coupons.append({
-                "code":         c.get("coupon", ""),
-                "coupon_type":  (c.get("couponType") or {}).get("name", "Coupon"),
-                "discount_str": disc_str,
-                "threshold_str":thresh_str,
-                "min_order":    min_order,
-                "is_free_ship": is_free_ship,
-                "tip":          (c.get("businessExtension") or {}).get("productDetail", {}).get("newCouponShowTip", ""),
-                **calc,
-                "savings_pct": round(calc["discount"] / sale_price * 100, 1) if sale_price and calc["discount"] else 0,
-            })
-    coupons.sort(key=lambda x: (-int(x["eligible"]), -x["discount"]))
+    # Variants from static endpoint
+    variant_data = parse_variants(sinfo)
 
-    # Parse variant matrix from multiLevelSaleAttribute.sku_list
-    variant_data = parse_variants(info)
+    # ── STEP 2: Realtime endpoint — for coupons only (failure is OK) ─────────
+    coupons           = []
+    free_shipping     = False
+    shipping_time     = ""
+    coupons_unavailable = False
 
-    # Fetch product name + image via a quick add-to-cart call (only if ATC creds are set)
-    prod_name  = f"Product #{goods_id}"
-    prod_image = ""
-    if ATC_GW_AUTH and ATC_ANTI_IN and variant_data.get("default_sku"):
+    try:
+        realtime = api_product_detail(goods_id, country)
+        if str(realtime.get("code")) == "0":
+            rinfo       = realtime.get("info") or {}
+            free_shipping = rinfo.get("isProductShippingFree") == "1"
+            shipping_time = rinfo.get("shipping_time_information", "")
+            # Use realtime price if available (more accurate)
+            rt_price = parse_amount(rinfo.get("sale_price") or {})
+            if rt_price > 0:
+                sale_price = rt_price
+                sale_raw   = rinfo.get("sale_price") or sale_raw
+            coupon_list = (rinfo.get("cmpCouponInfo") or {}).get("cmpCouponInfoList") or []
+            for c in coupon_list:
+                if c.get("isValid") != 1:
+                    continue
+                for rule in (c.get("rules") or []):
+                    disc_str  = rule.get("discount", "")
+                    thresh    = rule.get("threshold", "No Min. Buy")
+                    min_order = parse_threshold(thresh)
+                    calc      = calc_coupon_discount(disc_str, sale_price, min_order)
+                    is_fs     = (c.get("businessExtension") or {}).get("productDetail", {}).get("isFreeShipping") == "1"
+                    coupons.append({
+                        "code":          c.get("coupon", ""),
+                        "coupon_type":   (c.get("couponType") or {}).get("name", "Coupon"),
+                        "discount_str":  disc_str,
+                        "threshold_str": thresh,
+                        "min_order":     min_order,
+                        "is_free_ship":  is_fs,
+                        "tip":           (c.get("businessExtension") or {}).get("productDetail", {}).get("newCouponShowTip", ""),
+                        **calc,
+                        "savings_pct": round(calc["discount"] / sale_price * 100, 1) if sale_price and calc["discount"] else 0,
+                    })
+            coupons.sort(key=lambda x: (-int(x["eligible"]), -x["discount"]))
+        else:
+            coupons_unavailable = True   # realtime failed — coupons unknown
+    except Exception:
+        coupons_unavailable = True
+
+    # ── STEP 3: Get name/image via ATC if static didn't return good ones ──────
+    if (not prod_image or prod_name == f"Product #{goods_id}") and ATC_GW_AUTH and ATC_ANTI_IN and variant_data.get("default_sku"):
         try:
-            # Short timeout (5s) — non-blocking; name/image are cosmetic
-            body = (f"isAppointMall=&mall_code=1&quantity=1&sceneFlag="
-                    f"&skuMallCode=1&fromPageName=goodsDetailAddToCart"
-                    f"&goods_id={goods_id}&sku_code={variant_data['default_sku']}")
-            overrides = {"content-type": "application/x-www-form-urlencoded"}
-            if ATC_GW_AUTH: overrides["x-gw-auth"] = ATC_GW_AUTH
-            if ATC_ANTI_IN: overrides["anti-in"]   = ATC_ANTI_IN
-            atc_resp = rq.post(f"{API_HOST}/order/add_to_cart",
-                               params={"goods_id": goods_id},
-                               data=body, headers=headers(country, overrides),
-                               timeout=5, verify=False)
-            atc = atc_resp.json()
+            atc_body = (f"isAppointMall=&mall_code=1&quantity=1&sceneFlag="
+                        f"&skuMallCode=1&fromPageName=goodsDetailAddToCart"
+                        f"&goods_id={goods_id}&sku_code={variant_data['default_sku']}")
+            ov = {"content-type": "application/x-www-form-urlencoded",
+                  "x-gw-auth": _cred("ATC_GW_AUTH") or ATC_GW_AUTH,
+                  "anti-in":   _cred("ATC_ANTI_IN") or ATC_ANTI_IN}
+            atc = rq.post(f"{API_HOST}/order/add_to_cart",
+                          params={"goods_id": goods_id}, data=atc_body,
+                          headers=headers(country, ov), timeout=5, verify=False).json()
             if str(atc.get("code")) == "0":
                 cart_obj = ((atc.get("info") or {}).get("cart") or {})
-                cart_id  = cart_obj.get("id")
                 product  = cart_obj.get("product") or {}
                 prod_name  = product.get("goods_name") or prod_name
-                prod_image = product.get("goods_thumb") or product.get("goods_img") or ""
+                prod_image = product.get("goods_thumb") or prod_image
+                cart_id    = cart_obj.get("id")
                 if cart_id:
-                    try:
-                        api_delete_cart_items([cart_id], country)
-                    except Exception:
-                        _enqueue_cleanup([cart_id], country)
+                    try:    api_delete_cart_items([cart_id], country)
+                    except: _enqueue_cleanup([cart_id], country)
         except Exception:
-            pass   # Non-fatal — name/image stay as fallback
+            pass
 
     return jsonify({
-        "goods_id":     goods_id,
-        "name":         prod_name,
-        "image":        prod_image,
-        "country":      country,
-        "currency":     currency,
-        "symbol":       symbol,
-        "sale_price":   sale_price,
-        "sale_display": fmt_amount(sale_raw, symbol),
-        "stock":        info.get("stock", "?"),
-        "is_on_sale":   info.get("is_on_sale") == "1",
-        "free_shipping":info.get("isProductShippingFree") == "1",
-        "shipping_time":info.get("shipping_time_information", ""),
-        "coupons":      coupons,
+        "goods_id":           goods_id,
+        "name":               prod_name,
+        "image":              prod_image,
+        "country":            country,
+        "currency":           currency,
+        "symbol":             symbol,
+        "sale_price":         sale_price,
+        "sale_display":       fmt_amount(sale_raw, symbol),
+        "stock":              stock,
+        "is_on_sale":         is_on_sale,
+        "free_shipping":      free_shipping,
+        "shipping_time":      shipping_time,
+        "coupons":            coupons,
+        "coupons_unavailable": coupons_unavailable,
         **variant_data,
     })
 
