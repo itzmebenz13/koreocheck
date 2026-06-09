@@ -16,12 +16,50 @@ import os
 import re
 import time
 import json
+import threading
 import urllib3
 from flask import Flask, request, jsonify, render_template
 
 import requests as rq
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CART CLEANUP QUEUE  (30-minute auto-cleanup safety net)
+# Tracks cart_ids added by the price checker so stale items are auto-deleted
+# even if the immediate post-checkout cleanup fails.
+# ─────────────────────────────────────────────────────────────────────────────
+_cleanup_queue  = {}   # {cart_id: (timestamp, country)}
+_cleanup_lock   = threading.Lock()
+CLEANUP_TTL_SEC = 1800  # 30 minutes
+
+def _enqueue_cleanup(cart_ids: list, country: str = "PH"):
+    ts = time.time()
+    with _cleanup_lock:
+        for cid in cart_ids:
+            _cleanup_queue[cid] = (ts, country)
+
+def _cleanup_worker():
+    """Background thread: deletes stale cart items every 60 seconds."""
+    while True:
+        time.sleep(60)
+        now = time.time()
+        to_del = {}   # country → [cart_id]
+        with _cleanup_lock:
+            for cid, (ts, country) in list(_cleanup_queue.items()):
+                if now - ts > CLEANUP_TTL_SEC:
+                    to_del.setdefault(country, []).append(cid)
+            for cids in to_del.values():
+                for cid in cids:
+                    _cleanup_queue.pop(cid, None)
+        for country, cids in to_del.items():
+            try:
+                api_delete_cart_items(cids, country)
+            except Exception:
+                pass
+
+_cleanup_thread = threading.Thread(target=_cleanup_worker, daemon=True)
+_cleanup_thread.start()
 
 app = Flask(__name__)
 
@@ -272,6 +310,16 @@ def api_delete_cart_items(cart_ids: list, country: str = "PH") -> dict:
     return resp.json()
 
 
+def api_get_cart(country: str = "PH") -> dict:
+    """Get current cart to identify existing checked items before our check."""
+    h = headers(country, {"content-type": "application/json; charset=utf-8"})
+    resp = rq.post(f"{API_HOST}/order/get_carts_info_for_order_confirm",
+                   json={"bag_show_style": "1", "country_id": "170",
+                         "userLocalSizeCountry": "", "postcode": POSTCODE},
+                   headers=h, timeout=15, verify=False)
+    return resp.json()
+
+
 def parse_variants(info: dict) -> dict:
     """
     Extract variant matrix from multiLevelSaleAttribute.sku_list.
@@ -315,13 +363,27 @@ def parse_variants(info: dict) -> dict:
         if size and size not in sizes_seen:
             sizes_seen.append(size)
 
+        # Per-SKU price — try mall_price first, then buried, then None (fallback to product price)
+        sku_price_raw = sku.get("price") or {}
+        mall_p   = ((sku.get("mall_price") or [{}])[0]) if sku.get("mall_price") else {}
+        buried_p = (sku_price_raw.get("buriedPrice") or {}).get("price") or {}
+        special_p = sku_price_raw.get("special_price") or sku_price_raw.get("salePrice") or {}
+        sku_price = (parse_amount(mall_p.get("salePrice") or {})
+                     or parse_amount(special_p)
+                     or None)
+        sku_display = (fmt_amount(mall_p.get("salePrice") or {})
+                       or fmt_amount(special_p)
+                       or None)
+
         variants.append({
-            "sku_code":  sku_code,
-            "color":     color,
-            "color_img": color_img,
-            "size":      size,
-            "stock":     stock,
-            "in_stock":  stock > 0,
+            "sku_code":    sku_code,
+            "color":       color,
+            "color_img":   color_img,
+            "size":        size,
+            "stock":       stock,
+            "in_stock":    stock > 0,
+            "price":       sku_price,
+            "price_display": sku_display,
         })
 
     # If only 1 unique color across all SKUs, treat as no color choice needed
@@ -407,8 +469,27 @@ def item_info():
     # Parse variant matrix from multiLevelSaleAttribute.sku_list
     variant_data = parse_variants(info)
 
+    # Fetch product name + image via a quick add-to-cart call (only if ATC creds are set)
+    prod_name  = f"Product #{goods_id}"
+    prod_image = ""
+    if ATC_GW_AUTH and ATC_ANTI_IN and variant_data.get("default_sku"):
+        try:
+            atc = api_add_to_cart(goods_id, variant_data["default_sku"], 1, country)
+            if str(atc.get("code")) == "0":
+                cart_obj = ((atc.get("info") or {}).get("cart") or {})
+                cart_id  = cart_obj.get("id")
+                product  = cart_obj.get("product") or {}
+                prod_name  = product.get("goods_name") or prod_name
+                prod_image = product.get("goods_thumb") or product.get("goods_img") or ""
+                if cart_id:
+                    api_delete_cart_items([cart_id], country)
+        except Exception:
+            pass   # Non-fatal — name/image stay as fallback
+
     return jsonify({
         "goods_id":     goods_id,
+        "name":         prod_name,
+        "image":        prod_image,
         "country":      country,
         "currency":     currency,
         "symbol":       symbol,
@@ -419,7 +500,7 @@ def item_info():
         "free_shipping":info.get("isProductShippingFree") == "1",
         "shipping_time":info.get("shipping_time_information", ""),
         "coupons":      coupons,
-        **variant_data,    # variants, has_colors, has_sizes, unique_colors, unique_sizes, default_sku
+        **variant_data,
     })
 
 
@@ -501,13 +582,16 @@ def do_checkout():
     if ATC_GW_AUTH and ATC_ANTI_IN:
         try:
             for item in item_results:
+                if not item.get("sku_code"):
+                    continue
                 atc = api_add_to_cart(item["goods_id"], item["sku_code"], item["qty"], country)
                 if str(atc.get("code")) == "0":
-                    cart_id = ((atc.get("info") or {}).get("cart") or {}).get("id")
+                    cart_obj = ((atc.get("info") or {}).get("cart") or {})
+                    cart_id  = cart_obj.get("id")
                     if cart_id:
                         added_cart_ids.append(cart_id)
-                        # Update name/image from real ATC response
-                        product = ((atc.get("info") or {}).get("cart") or {}).get("product") or {}
+                        _enqueue_cleanup([cart_id], country)   # 30-min safety net
+                        product = cart_obj.get("product") or {}
                         item["name"]  = product.get("goods_name") or item["name"]
                         item["image"] = product.get("goods_thumb") or item["image"]
             if added_cart_ids:
@@ -518,11 +602,15 @@ def do_checkout():
         except Exception:
             pass
         finally:
+            # Immediate cleanup — remove from queue on success
             if added_cart_ids:
                 try:
                     api_delete_cart_items(added_cart_ids, country)
+                    with _cleanup_lock:
+                        for cid in added_cart_ids:
+                            _cleanup_queue.pop(cid, None)
                 except Exception:
-                    pass
+                    pass  # 30-min fallback will handle it
 
     # ── Shipping (real from checkout or calculated)
     if used_real_checkout:
@@ -591,6 +679,7 @@ def do_checkout():
         "grand_total":         grand_total,
         "grand_total_display": f"{symbol}{grand_total:.2f}",
         "used_real_checkout":  used_real_checkout,
+        "cleanup_notice":      True,   # tell frontend to show 30-min notice
         "shipping": {
             "free":              shipping_free,
             "cost":              shipping_cost,
@@ -599,13 +688,14 @@ def do_checkout():
             "need_more_display": f"{symbol}{need_more:.2f}" if need_more > 0 else "",
         },
         "points": {
-            "available":          avail_points,
-            "max_discount":       max_pt_disc,
+            "available":            avail_points,
+            "max_discount":         max_pt_disc,
             "max_discount_display": f"{symbol}{max_pt_disc:.2f}",
-            "ratio_tip":          points_tip,
+            "ratio_tip":            points_tip,
+            "has_points":           avail_points > 0 and max_pt_disc > 0,
         },
         "sorted_price":  sorted_price,
-        "coupons":       coupon_options,
+        "coupons":       coupon_options,      # all coupons for user selection
         "best_coupon":   best_coupon,
         "coupon_count":  len(coupon_options),
     })
