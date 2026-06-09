@@ -45,15 +45,23 @@ def _parse_raw_headers(raw: str) -> dict:
         name = name.strip().lower()
         val  = val.strip()
         mapping = {
-            "x-gw-auth":   "GW_AUTH",
-            "anti-in":     "ANTI_IN",
-            "x-cs-random": "CS_RANDOM",
-            "ruleids":     "RULEIDS",
-            "armortoken":  "ARMOR_TOKEN",
-            "token":       "TOKEN",
-            "smdeviceid":  "SMDEVICE_ID",
-            "cookie":      "COOKIE",
-            "x-ad-flag":   "AD_FLAG",
+            "x-gw-auth":          "GW_AUTH",
+            "anti-in":            "ANTI_IN",
+            "x-cs-random":        "CS_RANDOM",
+            "ruleids":            "RULEIDS",
+            "armortoken":         "ARMOR_TOKEN",
+            "token":              "TOKEN",
+            "smdeviceid":         "SMDEVICE_ID",
+            "cookie":             "COOKIE",
+            "x-ad-flag":          "AD_FLAG",
+            "deviceid":           "DEVICE_ID",
+            "dev-id":             "DEVICE_ID",
+            "ugid":               "UGID",
+            "newuid":             "SORTUID",
+            "sortuid":            "SORTUID",
+            "device":             "DEVICE_INFO",
+            "os-version":         "OS_VERSION",
+            "devicesystemversion": "DEVICE_SYS_VER",
         }
         if name in mapping and val:
             found[mapping[name]] = val
@@ -138,26 +146,36 @@ SYMBOL_MAP   = {"PHP": "₱", "THB": "฿", "MYR": "RM", "SGD": "S$", "USD": "$"
 # ─────────────────────────────────────────────────────────────────
 
 def headers(country: str = "PH", extra: dict = None) -> dict:
-    currency = CURRENCY_MAP.get(country.upper(), "PHP")
+    currency   = CURRENCY_MAP.get(country.upper(), "PHP")
+    device_id  = _cred("DEVICE_ID")  or DEVICE_ID
+    device_inf = _cred("DEVICE_INFO") or DEVICE_INFO
+    os_ver     = _cred("OS_VERSION")  or "11"
+    sys_ver    = _cred("DEVICE_SYS_VER") or f"Android{os_ver}"
+    ugid_val   = _cred("UGID")    or UGID
+    sort_val   = _cred("SORTUID") or SORTUID
+    # Extract model name only for user-agent (e.g. "ELP-NX9 Android16" → "ELP-NX9")
+    device_model = device_inf.split()[0] if device_inf else ""
     h = {
         "accept":              "application/json",
         "app-from":            "shein",
         "appname":             "shein app",
         "apptype":             "shein",
-        "appcountry":          country.upper(),   # Use the actual country, not the capture country (was GB, causing 836000 for PH products)
+        "appcountry":          country.upper(),
         "appcurrency":         currency,
         "applanguage":         "en",
         "clientid":            "100",
         "currency":            currency,
-        "dev-id":              DEVICE_ID,
-        "device":              DEVICE_INFO,
-        "deviceid":            DEVICE_ID,
-        "devicesystemversion": "Android11",
+        "dev-id":              device_id,
+        "device":              device_inf,
+        "deviceid":            device_id,
+        "devicesystemversion": sys_ver,
         "devtype":             "Android",
         "language":            "en",
+        "device_language":     "en",
+        "devicelanguage":      "en",
         "localcountry":        country.upper(),
-        "network-type":        "UNKNOWN",
-        "os-version":          "11",
+        "network-type":        "4G",
+        "os-version":          os_ver,
         "platform":            "app-native",
         "siteuid":             "android",
         "smdeviceid":          _cred("SMDEVICE_ID"),
@@ -167,18 +185,18 @@ def headers(country: str = "PH", extra: dict = None) -> dict:
         "x-cs-random":         _cred("CS_RANDOM"),
         "anti-in":             _cred("ANTI_IN"),
         "x-ad-flag":           _cred("AD_FLAG"),
-        "ugid":                UGID,
-        "newuid":              SORTUID,
-        "sortuid":             SORTUID,
+        "ugid":                ugid_val,
+        "newuid":              sort_val,
+        "sortuid":             sort_val,
         "usercountry":         country.upper(),
         "version":             APP_VERSION,
         "appversion":          APP_VERSION,
         "cookie":              _cred("COOKIE"),
-        "ruleids":             "45950," + (_cred("RULEIDS") or RULEIDS),   # 45950 = PH access rule
-        "user-agent":          f"Shein {APP_VERSION} Android 11 {DEVICE_INFO} {country.upper()} en {SORTUID}",
+        "ruleids":             "45950," + (_cred("RULEIDS") or RULEIDS),
+        "user-agent":          f"Shein {APP_VERSION} Android {os_ver} {device_model} {country.upper()} en {sort_val}",
         "accept-encoding":     "gzip",
-        "uberctx-personal-switch": "u-1.r-1.s-1",
-        "uberctx-traffic-mark-member": "26",
+        "uberctx-personal-switch": "r-1.s-1.u-1",
+        "uberctx-traffic-mark-member": "52",
     }
     if extra:
         h.update(extra)
@@ -438,20 +456,19 @@ def api_add_to_cart(goods_id: str, sku_code: str, qty: int = 1,
                     country: str = "PH") -> dict:
     """
     Add item to cart.
-    Uses params format from the working T2 account capture:
-    promotion_type, trace_id, promotion_id, local_goods — these are required for
-    newer products that reject the older isAppointMall/fromPageName format.
+    Uses body format from confirmed-working T2 account capture.
     """
     import time as _t
-    trace_id = f"sandroid{int(_t.time() * 1000)}{DEVICE_ID}"
-    body = (f"promotion_type=0"
+    device_id = _cred("DEVICE_ID") or DEVICE_ID
+    trace_id = f"sandroid{int(_t.time() * 1000)}{device_id}"
+    body = (f"isAppointMall="
             f"&trace_id={trace_id}"
-            f"&quantity={qty}"
             f"&mall_code=1"
+            f"&quantity={qty}"
+            f"&sceneFlag="
             f"&skuMallCode=1"
+            f"&fromPageName=goodsDetailAddToCart"
             f"&goods_id={goods_id}"
-            f"&promotion_id=0"
-            f"&local_goods=0"
             f"&sku_code={sku_code}")
     overrides = {"content-type": "application/x-www-form-urlencoded"}
     if ATC_GW_AUTH:
@@ -467,7 +484,14 @@ def api_add_to_cart(goods_id: str, sku_code: str, qty: int = 1,
 
 def api_checkout(country: str = "PH") -> dict:
     """Call checkout page — returns full price breakdown for checked cart items."""
-    session_id = f"{SORTUID}{int(time.time() * 1000)}"
+    sort_val   = _cred("SORTUID") or SORTUID
+    session_id = f"{sort_val}{int(time.time() * 1000)}"
+    # Use live-overridable address fields (T2 account has different address)
+    addr_id  = _cred("ADDRESS_ID")  or ADDRESS_ID
+    city_val = _cred("CITY")        or CITY
+    post_val = _cred("POSTCODE")    or POSTCODE
+    state_val = _cred("STATE")      or STATE
+    cid_val  = _cred("COUNTRY_ID")  or COUNTRY_ID
     payload = {
         "biz_mode_list": ["0"],
         "and_page": "v2",
@@ -478,11 +502,11 @@ def api_checkout(country: str = "PH") -> dict:
         "is_old_version": "0",
         "giftcard_verify": "0",
         "isFirst": "1",
-        "city": CITY,
-        "postcode": POSTCODE,
-        "state": STATE,
-        "address_id": ADDRESS_ID,
-        "country_id": COUNTRY_ID,
+        "city": city_val,
+        "postcode": post_val,
+        "state": state_val,
+        "address_id": addr_id,
+        "country_id": cid_val,
         "popup": {"oneClickLowestTimes": "0"},
     }
     overrides = {
@@ -1400,6 +1424,14 @@ def admin_refresh():
             return "<h2 style='font-family:monospace;color:red'>No data pasted.</h2>", 400
 
         parsed = _parse_raw_headers(raw)
+
+        # Also parse address fields if provided via extra form fields
+        for form_key, cred_key in [("address_id", "ADDRESS_ID"), ("city", "CITY"),
+                                    ("postcode", "POSTCODE"), ("state", "STATE")]:
+            v = (request.form.get(form_key) or "").strip()
+            if v:
+                parsed[cred_key] = v
+
         if not parsed:
             return "<h2 style='font-family:monospace;color:red'>No headers found. Make sure you pasted the full raw HTTP request.</h2>", 400
 
@@ -1408,7 +1440,7 @@ def admin_refresh():
             _live_creds[k] = v
             updated.append(k)
 
-        # If this looks like a product-detail request, also set as ATC fallback
+        # Also set as ATC fallback (same account now)
         if "GW_AUTH" in parsed:
             _live_creds["ATC_GW_AUTH"] = parsed["GW_AUTH"]
         if "ANTI_IN" in parsed:
@@ -1450,20 +1482,31 @@ button:hover{{background:#33ecff}}
 a{{color:#4a5568;font-size:11px;display:block;margin-top:12px}}
 </style></head><body><div class="wrap">
 <h1>🔑 Refresh Credentials</h1>
-<p>Updates GW_AUTH, ANTI_IN, CS_RANDOM, RULEIDS instantly — no Railway redeploy needed.</p>
+<p>Updates ALL credentials (armortoken, device, auth tokens, etc.) instantly — no Railway redeploy needed.</p>
 <div class="steps">
-<span>How to capture:</span><br>
-1. Open SHEIN app → tap any product page<br>
+<span>How to capture (T2 armortoken required):</span><br>
+1. Open SHEIN app on the T2 device → tap any product page<br>
 2. In your HTTP capture tool, find the request to:<br>
 &nbsp;&nbsp;<code style="color:#ffcc00">api-service.shein.com/product/get_goods_detail_realtime_data</code><br>
 3. Copy the <b>full raw request</b> (all headers + URL line)<br>
-4. Paste it below and click Refresh
+4. Paste it below and click Refresh<br>
+<br>
+<span style="color:#ffcc00">Parsed headers:</span> armortoken, token, deviceid, smdeviceid, ugid, sortuid, device, x-gw-auth, anti-in, x-cs-random, ruleids, x-ad-flag, cookie, os-version
 </div>
 {'<label>Admin Secret</label><input type="text" name="secret" form="rf" placeholder="Enter secret..." autocomplete="off">' if secret else ''}
 <form id="rf" method="POST">
 <input type="hidden" name="secret" value="">
 <label>Paste Raw HTTP Request</label>
-<textarea name="raw" placeholder="POST /product/get_goods_detail_realtime_data?... HTTP/2&#10;host: api-service.shein.com&#10;x-gw-auth: a=vhOvoN...&#10;anti-in: 2_4.2.3_...&#10;..."></textarea>
+<textarea name="raw" placeholder="GET /product/get_goods_detail_realtime_data?... HTTP/2&#10;host: api-service.shein.com&#10;armortoken: T2_4.2.3_...&#10;x-gw-auth: a=vhOvoN...&#10;anti-in: 2_4.2.3_...&#10;deviceid: shein_...&#10;..."></textarea>
+<div style="margin-top:16px;padding:14px;background:#0f1218;border:1px solid #1e2530;border-radius:8px">
+<span style="color:#00e5ff;font-size:12px">ADDRESS OVERRIDE (optional — for T2 account)</span><br>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
+<input type="text" name="address_id" placeholder="Address ID (e.g. 409618517)" style="margin:0">
+<input type="text" name="city" placeholder="City (e.g. CALAUAG)" style="margin:0">
+<input type="text" name="postcode" placeholder="Postcode (e.g. 4000)" style="margin:0">
+<input type="text" name="state" placeholder="State (e.g. QUEZON)" style="margin:0">
+</div>
+</div>
 <button type="submit">⚡ Refresh Credentials</button>
 </form>
 <a href="/">← Back to Price Checker</a>
