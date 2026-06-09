@@ -149,7 +149,11 @@ def headers(country: str = "PH", extra: dict = None) -> dict:
     currency   = CURRENCY_MAP.get(country.upper(), "PHP")
     device_id  = _cred("DEVICE_ID")  or DEVICE_ID
     device_inf = _cred("DEVICE_INFO") or DEVICE_INFO
-    os_ver     = _cred("OS_VERSION")  or "11"
+    # Derive OS version: explicit setting > extract from device string > fallback "11"
+    os_ver = _cred("OS_VERSION") or ""
+    if not os_ver:
+        _m = re.search(r'Android(\d+)', device_inf or "")
+        os_ver = _m.group(1) if _m else "11"
     sys_ver    = _cred("DEVICE_SYS_VER") or f"Android{os_ver}"
     ugid_val   = _cred("UGID")    or UGID
     sort_val   = _cred("SORTUID") or SORTUID
