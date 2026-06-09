@@ -168,14 +168,37 @@ def calc_coupon_discount(discount_str: str, price: float, min_order: float) -> d
 # ─────────────────────────────────────────────────────────────────
 
 def api_product_detail(goods_id: str, country: str = "PH") -> dict:
-    """Fetch realtime product data (price + applicable coupons)."""
+    """Fetch realtime product data (price + applicable coupons).
+    All params — including empty ones — must match the original app request exactly."""
     params = {
-        "goods_id": goods_id, "mallCode": "1",
-        "localSiteQueryFlag": "0", "isAppointMall": "0",
-        "isUserSelectedMallCode": "0", "hasReportMember": "0",
-        "sourceFrom": "goods_detail", "visitNumOfDay": "1",
-        "isShowMall": "0", "isPaidMember": "0",
-        "priorityMallType": "1", "timeZone": "Asia/Manila",
+        "priorityMallType":          "1",
+        "sceneFromPage":             "",
+        "isRelatedColorNeedPromotion": "",
+        "promotionId":               "",
+        "isAppointMall":             "0",
+        "useSupplyGoods":            "",
+        "isUserSelectedMallCode":    "0",
+        "sceneFlag":                 "",
+        "mallCode":                  "1",
+        "localSiteQueryFlag":        "0",
+        "orderPrice":                "",
+        "isHideNotSatisfied":        "",
+        "isSizeGatherTag":           "",
+        "hasReportMember":           "0",
+        "sourceFrom":                "goods_detail",
+        "promotionLogoType":         "",
+        "promotionType":             "",
+        "isHidePromotionTip":        "",
+        "goods_id":                  goods_id,
+        "timeZone":                  "Asia/Manila",
+        "isHideEstimatePriceInfo":   "",
+        "popComponentEntry":         "",
+        "bundledPurchaseMainGoodsId": "",
+        "visitNumOfDay":             "1",
+        "isShowMall":                "0",
+        "isPaidMember":              "0",
+        "billno":                    "",
+        "promotionProductMark":      "",
     }
     resp = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
                   params=params, headers=headers(country), timeout=15, verify=False)
