@@ -1202,15 +1202,33 @@ def debug():
     """Quick credential check — open /debug in browser."""
     ok = bool(TOKEN and ARMOR_TOKEN and GW_AUTH and ADDRESS_ID)
     atc_ok = bool(ATC_GW_AUTH and ATC_ANTI_IN)
+    # Show what headers() ACTUALLY sends (after _cred resolution)
+    live_device_id  = _cred("DEVICE_ID") or DEVICE_ID
+    live_armor      = _cred("ARMOR_TOKEN") or ARMOR_TOKEN
+    live_device_inf = _cred("DEVICE_INFO") or DEVICE_INFO
+    live_os_ver     = _cred("OS_VERSION") or "11"
+    live_sortuid    = _cred("SORTUID") or SORTUID
+    live_ugid       = _cred("UGID") or UGID
     return jsonify({
         "status": "ok",
+        "app_version": "v2_t2_fix",
         "credentials_set": ok,
         "atc_credentials_set": atc_ok,
-        "address_id": ADDRESS_ID,
+        "address_id": _cred("ADDRESS_ID") or ADDRESS_ID,
         "usage": {
             "product_debug_working": "/debug/product?goods_id=470311441&country=PH",
             "product_debug_failing": "/debug/product?goods_id=492039801&country=PH",
             "product_debug_custom":  "/debug/product?goods_id=YOUR_ID&country=PH",
+        },
+        "live_headers": {
+            "armortoken_prefix": live_armor[:20] + "..." if live_armor else "MISSING",
+            "device_id":    live_device_id[:40] if live_device_id else "MISSING",
+            "device_info":  live_device_inf,
+            "os_version":   live_os_ver,
+            "sortuid":      live_sortuid,
+            "ugid":         live_ugid,
+            "live_creds_count": len(_live_creds),
+            "live_creds_keys": sorted(_live_creds.keys()),
         },
         "env_check": {
             "TOKEN_set":    bool(TOKEN),
