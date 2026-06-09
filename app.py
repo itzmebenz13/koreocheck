@@ -331,7 +331,9 @@ def item_info():
         return jsonify({"error": f"Request failed: {exc}"}), 502
 
     if str(detail.get("code")) != "0":
-        return jsonify({"error": detail.get("msg") or "Product not found."}), 400
+        shein_code = detail.get("code", "?")
+        shein_msg  = detail.get("msg") or detail.get("message") or ""
+        return jsonify({"error": shein_msg or f"SHEIN API error (code={shein_code}). Check /debug for details."}), 400
 
     info      = detail.get("info") or {}
     sale_raw  = info.get("sale_price") or {}
@@ -566,6 +568,44 @@ def do_checkout():
 def health():
     ok = bool(TOKEN and ARMOR_TOKEN and GW_AUTH and ADDRESS_ID)
     return jsonify({"status": "ok", "credentials_set": ok, "address_id": ADDRESS_ID})
+
+
+@app.route("/debug")
+def debug():
+    """
+    Test endpoint — calls SHEIN product API with goods_id=470311441
+    and returns the RAW response so you can diagnose any auth/config issues.
+    Open this URL in your browser: /debug
+    """
+    country = request.args.get("country", "PH")
+    goods_id = request.args.get("goods_id", "470311441")
+    try:
+        result = api_product_detail(goods_id, country)
+        code   = str(result.get("code", "?"))
+        msg    = result.get("msg", "")
+        info   = result.get("info") or {}
+
+        # Safe summary — don't expose full response (privacy)
+        return jsonify({
+            "shein_code":        code,
+            "shein_msg":         msg,
+            "goods_id_returned": info.get("goods_id"),
+            "sale_price":        (info.get("sale_price") or {}).get("amountWithSymbol"),
+            "stock":             info.get("stock"),
+            "sku_count":         len((info.get("multiLevelSaleAttribute") or {}).get("sku_list") or []),
+            "coupon_count":      len(((info.get("cmpCouponInfo") or {}).get("cmpCouponInfoList")) or []),
+            "env_check": {
+                "TOKEN_set":       bool(TOKEN),
+                "ARMOR_set":       bool(ARMOR_TOKEN),
+                "GW_AUTH_set":     bool(GW_AUTH),
+                "SMDEVICE_set":    bool(SMDEVICE_ID),
+                "COOKIE_set":      bool(COOKIE),
+                "TOKEN_preview":   TOKEN[-12:] if TOKEN else "MISSING",
+                "DEVICE_ID":       DEVICE_ID[:30] + "..." if len(DEVICE_ID) > 30 else DEVICE_ID,
+            },
+        })
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 
 if __name__ == "__main__":
