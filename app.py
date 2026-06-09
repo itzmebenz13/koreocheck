@@ -21,13 +21,8 @@ import urllib3
 from flask import Flask, request, jsonify, render_template
 
 import requests as rq
-from curl_cffi.requests import Session as CffiSession
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-# TLS-fingerprinted session — impersonates Chrome on Android
-# This bypasses SHEIN's 836000 server-side TLS fingerprint detection
-_cffi_session = CffiSession(impersonate="chrome131_android")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # IN-MEMORY CREDENTIAL OVERRIDE
@@ -1481,33 +1476,47 @@ def debug_product():
         report["steps"].append(s)
         return s
 
-    # ── Step 1: Product detail with curl_cffi (Android TLS fingerprint)
-    try:
-        params_full = _product_detail_params(goods_id, country)
-        resp1 = _cffi_session.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
-                       params=params_full, headers=headers(country),
-                       timeout=15, verify=False)
-        r1 = resp1.json()
-        code1 = str(r1.get("code", "?"))
-        info1 = r1.get("info") or {}
-        if code1 == "0":
-            step("product_detail_curl_cffi", "✅ OK (TLS fingerprint bypass)", code=code1,
-                 detail={
-                     "sale_price": (info1.get("sale_price") or {}).get("amountWithSymbol"),
-                     "stock": info1.get("stock"),
-                     "sku_count": len((info1.get("multiLevelSaleAttribute") or {}).get("sku_list") or []),
-                     "coupon_count": len(((info1.get("cmpCouponInfo") or {}).get("cmpCouponInfoList")) or []),
-                     "timezone_used": params_full["timeZone"],
-                     "method": "curl_cffi chrome131_android",
-                 })
-        else:
-            step("product_detail_full_params", "❌ FAILED", code=code1,
-                 msg=r1.get("msg") or "",
-                 detail={"timezone_used": params_full["timeZone"],
-                         "hint": "836000 = security/param mismatch, try different country"})
-    except Exception as exc:
-        step("product_detail_full_params", "💥 EXCEPTION", msg=str(exc))
-        r1 = {}; code1 = "exc"; info1 = {}
+    # ── Step 1: Product detail via web API (browser-based, no 836000)
+    params_full = _product_detail_params(goods_id, country)
+    if _web_creds:
+        try:
+            r1 = api_product_detail_web(goods_id, country)
+            code1 = str(r1.get("code", "?"))
+            info1 = r1.get("info") or {}
+            if code1 == "0":
+                step("product_detail_web_api", "✅ OK (browser web API)", code=code1,
+                     detail={
+                         "sale_price": (info1.get("sale_price") or {}).get("amountWithSymbol"),
+                         "stock": info1.get("stock"),
+                         "sku_count": len((info1.get("multiLevelSaleAttribute") or {}).get("sku_list") or []),
+                         "coupon_count": len(((info1.get("cmpCouponInfo") or {}).get("cmpCouponInfoList")) or []),
+                         "method": "ph.shein.com/bff-api",
+                     })
+            else:
+                step("product_detail_web_api", "❌ FAILED", code=code1,
+                     msg=r1.get("msg") or "",
+                     detail={"hint": "Web API failed — check browser credentials in /admin/refresh"})
+        except Exception as exc:
+            step("product_detail_web_api", "💥 EXCEPTION", msg=str(exc))
+            r1 = {}; code1 = "exc"; info1 = {}
+    else:
+        # No web creds — try app API directly
+        try:
+            resp1 = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
+                           params=params_full, headers=headers(country),
+                           timeout=15, verify=False)
+            r1 = resp1.json()
+            code1 = str(r1.get("code", "?"))
+            info1 = r1.get("info") or {}
+            if code1 == "0":
+                step("product_detail_app_api", "✅ OK", code=code1)
+            else:
+                step("product_detail_app_api", "❌ FAILED", code=code1,
+                     msg=r1.get("msg") or "",
+                     detail={"hint": "Paste browser capture in /admin/refresh to fix 836000"})
+        except Exception as exc:
+            step("product_detail_app_api", "💥 EXCEPTION", msg=str(exc))
+            r1 = {}; code1 = "exc"; info1 = {}
 
     # ── Step 2: Retry with different mallCode values
     if code1 != "0":
