@@ -543,50 +543,87 @@ def index():
 
 def _get_sku_via_main_detail(goods_id: str, country: str) -> list:
     """
-    Try to get sku_codes from the main product detail endpoint.
-    This has different security than the realtime endpoint and may work when realtime fails.
+    Try to get sku_codes from various product endpoints.
     Returns list of {sku_code, color, size, stock, in_stock}.
     """
-    endpoints = [
-        f"{API_HOST}/product/main/goods_detail_v4",
-        f"{API_HOST}/product/main/sku_info",
-        f"{API_HOST}/product/main/goods_skc_sku_info",
+    tz = TIMEZONE_MAP.get(country.upper(), "Asia/Manila")
+    attempts = [
+        # App API main detail endpoints
+        (f"{API_HOST}/product/main/goods_detail_v4",
+         {"goods_id": goods_id, "mallCode": "1", "sourceFrom": "goods_detail"}),
+        (f"{API_HOST}/product/main/goods_skc_sku_info",
+         {"goods_id": goods_id, "mallCode": "1"}),
+        # Without armortoken (stripped headers)
+        (f"{API_HOST}/product/get_goods_detail_realtime_data",
+         _product_detail_params(goods_id, country)),
     ]
-    for ep in endpoints:
+
+    # Also try web API (m.shein.com) — different security model
+    web_country = country.lower()
+    web_headers_map = {
+        "accept": "application/json, text/plain, */*",
+        "user-agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+        "referer": f"https://m.shein.com/{web_country}/",
+        "x-requested-with": "XMLHttpRequest",
+    }
+    if COOKIE:      web_headers_map["cookie"]      = COOKIE
+    if CS_RANDOM:   web_headers_map["x-cs-random"] = CS_RANDOM
+    if GW_AUTH:     web_headers_map["x-gw-auth"]   = GW_AUTH
+    if ARMOR_TOKEN: web_headers_map["armortoken"]   = ARMOR_TOKEN
+    if SMDEVICE_ID: web_headers_map["smdeviceid"]   = SMDEVICE_ID
+    if ANTI_IN:     web_headers_map["anti-in"]      = ANTI_IN
+
+    web_attempts = [
+        (f"https://m.shein.com/{web_country}/bff-api/product/get_goods_detail_realtime_data",
+         {"_ver": "1.1.8", "_lang": "en", "goods_id": goods_id, "mallCode": "1",
+          "sourceFrom": "goods_detail", "visitNumOfDay": "1",
+          "timeZone": tz, "isPaidMember": "0"}),
+    ]
+
+    def _extract_skus(data):
+        info = data.get("info") or {}
+        for getter in [
+            lambda i: (i.get("multiLevelSaleAttribute") or {}).get("sku_list") or [],
+            lambda i: i.get("sku_list") or [],
+            lambda i: i.get("skuList") or [],
+        ]:
+            sku_list = getter(info)
+            if sku_list:
+                result = []
+                for sku in sku_list:
+                    attrs = sku.get("sku_sale_attr") or []
+                    color = next((a.get("attr_value_name") for a in attrs if a.get("attr_name_en") == "Color"), "")
+                    size  = next((a.get("attr_value_name") for a in attrs if a.get("attr_name_en") == "Size"), "")
+                    stock = int(sku.get("stock") or 0)
+                    result.append({
+                        "sku_code": sku.get("sku_code") or "",
+                        "color": color, "size": size,
+                        "stock": stock, "in_stock": stock > 0,
+                    })
+                return [r for r in result if r["sku_code"]]
+        return []
+
+    for ep, params in attempts:
+        for h_variant in [headers(country), {k: v for k, v in headers(country).items() if k not in ("armortoken", "x-gw-auth", "anti-in")}]:
+            try:
+                data = rq.get(ep, params=params, headers=h_variant, timeout=10, verify=False).json()
+                if str(data.get("code")) == "0":
+                    skus = _extract_skus(data)
+                    if skus:
+                        return skus
+            except Exception:
+                pass
+
+    for ep, params in web_attempts:
         try:
-            params = {
-                "goods_id": goods_id, "mallCode": "1",
-                "sourceFrom": "goods_detail", "isShowMall": "0",
-            }
-            resp = rq.get(ep, params=params, headers=headers(country),
-                          timeout=10, verify=False)
-            data = resp.json()
-            if str(data.get("code")) != "0":
-                continue
-            info = data.get("info") or {}
-            # Try common paths where sku_list might be
-            for path in [
-                lambda i: (i.get("multiLevelSaleAttribute") or {}).get("sku_list") or [],
-                lambda i: i.get("sku_list") or [],
-                lambda i: i.get("skuList") or [],
-            ]:
-                sku_list = path(info)
-                if sku_list:
-                    result = []
-                    for sku in sku_list:
-                        attrs = sku.get("sku_sale_attr") or []
-                        color = next((a.get("attr_value_name") for a in attrs if a.get("attr_name_en") == "Color"), "")
-                        size  = next((a.get("attr_value_name") for a in attrs if a.get("attr_name_en") == "Size"), "")
-                        stock = int(sku.get("stock") or 0)
-                        result.append({
-                            "sku_code": sku.get("sku_code") or "",
-                            "color": color, "size": size,
-                            "stock": stock, "in_stock": stock > 0,
-                        })
-                    if result:
-                        return result
+            data = rq.get(ep, params=params, headers=web_headers_map, timeout=10, verify=False).json()
+            if str(data.get("code")) == "0":
+                skus = _extract_skus(data)
+                if skus:
+                    return skus
         except Exception:
             pass
+
     return []
 
 
@@ -612,10 +649,11 @@ def _item_info_via_atc(goods_id: str, country: str) -> tuple:
                   or next((s["sku_code"] for s in sku_entries if s.get("sku_code")), "")
 
     if not first_sku:
-        # Can't do ATC without a sku_code — return minimal placeholder
+        # Can't get sku_code from any API — ask user to provide it manually
         return jsonify({
-            "error": f"Product #{goods_id} is not accessible via the current credentials. "
-                     f"The product may require different auth or is not available in {country}."
+            "error": "sku_required",
+            "goods_id": goods_id,
+            "message": f"Cannot auto-detect SKU for product #{goods_id}. Please enter the SKU code manually (found in SHEIN app product URL or share link)."
         }), 400
 
     # ── Step 2: ATC probe with known sku_code → get name, image, price
@@ -1022,8 +1060,9 @@ def debug():
         "atc_credentials_set": atc_ok,
         "address_id": ADDRESS_ID,
         "usage": {
-            "product_debug": "/debug/product?goods_id=470311441&country=PH",
-            "product_debug_th": "/debug/product?goods_id=YOUR_ID&country=TH",
+            "product_debug_working": "/debug/product?goods_id=470311441&country=PH",
+            "product_debug_failing": "/debug/product?goods_id=492039801&country=PH",
+            "product_debug_custom":  "/debug/product?goods_id=YOUR_ID&country=PH",
         },
         "env_check": {
             "TOKEN_set":    bool(TOKEN),
@@ -1051,7 +1090,7 @@ def debug_product():
       /debug/product?goods_id=YOUR_ID&country=TH
     """
     country  = request.args.get("country", "PH").upper()
-    goods_id = request.args.get("goods_id", "470311441").strip()
+    goods_id = request.args.get("goods_id", "492039801").strip()
     report   = {"goods_id": goods_id, "country": country, "steps": [], "diagnosis": []}
 
     def step(name, status, code=None, msg=None, detail=None):
