@@ -291,6 +291,38 @@ def _product_detail_params(goods_id: str, country: str = "PH") -> dict:
     }
 
 
+def api_search_product(goods_id: str, country: str = "PH") -> dict | None:
+    """
+    Search for a product by goods_id using the search endpoint.
+    This works for ALL products — no 836000 issues.
+    Returns the first matching product dict, or None.
+    """
+    body = (
+        f"keywords={goods_id}&page=1&limit=10&sort=0"
+        f"&source=search&scene=search&mall_code=1"
+        f"&search_source=1&page_name=page_search"
+        f"&force_suggest=0&force_not_correct=0"
+        f"&isClickRefresh=0&exposedPosition=0"
+        f"&poskey=&tag_type=&cat_id=&store_code="
+    )
+    h = headers(country, {"content-type": "application/x-www-form-urlencoded"})
+    try:
+        resp = rq.post(f"{API_HOST}/product/get_products_by_keywords",
+                       data=body, headers=h, timeout=12, verify=False)
+        data = resp.json()
+        if str(data.get("code")) == "0":
+            products = (data.get("info") or {}).get("products") or []
+            # Find exact goods_id match
+            for p in products:
+                if str(p.get("goods_id")) == str(goods_id):
+                    return p
+            # Return first result if no exact match
+            return products[0] if products else None
+    except Exception:
+        pass
+    return None
+
+
 def api_product_static(goods_id: str, country: str = "PH") -> dict:
     """
     Fetch STATIC product data — name, images, SKUs, base price.
@@ -781,26 +813,63 @@ def item_info():
     currency = CURRENCY_MAP.get(country, "PHP")
     symbol   = SYMBOL_MAP.get(currency, "₱")
 
-    # ── STEP 1: Static endpoint — reliable for all products ──────────────────
+    # ── STEP 1: Get basic product info ───────────────────────────────────────
+    # Try in order: static endpoint → search endpoint
+    # Both are reliable and don't have the 836000 issue of the realtime endpoint.
+    sinfo      = {}
+    prod_name  = f"Product #{goods_id}"
+    prod_image = ""
+    sale_raw   = {}
+    sale_price = 0.0
+    is_on_sale = False
+    stock      = "?"
+    variant_data = {"variants": [], "has_colors": False, "has_sizes": False,
+                    "unique_colors": [], "unique_sizes": [], "default_sku": ""}
+
+    # Try static endpoint
     try:
         static = api_product_static(goods_id, country)
-    except Exception as exc:
-        return jsonify({"error": f"Request failed: {exc}"}), 502
+        if str(static.get("code")) == "0":
+            sinfo      = static.get("info") or {}
+            sale_raw   = sinfo.get("sale_price") or sinfo.get("retail_price") or {}
+            sale_price = parse_amount(sale_raw)
+            prod_name  = sinfo.get("goods_name") or prod_name
+            prod_image = sinfo.get("goods_img")  or sinfo.get("original_img") or ""
+            is_on_sale = sinfo.get("is_on_sale") == "1"
+            stock      = sinfo.get("stock", "?")
+            variant_data = parse_variants(sinfo)
+    except Exception:
+        pass
 
-    if str(static.get("code")) != "0":
-        msg = static.get("msg") or f"Product not found (code={static.get('code')})"
-        return jsonify({"error": msg}), 400
+    # If static failed, try search endpoint (works for ALL products)
+    if not sinfo:
+        try:
+            sp = api_search_product(goods_id, country)
+            if sp:
+                sale_raw   = sp.get("salePrice") or sp.get("retailPrice") or {}
+                sale_price = parse_amount(sale_raw)
+                prod_name  = sp.get("goods_name") or prod_name
+                prod_image = sp.get("goods_img")  or ""
+                is_on_sale = bool(sp.get("is_on_sale"))
+                stock      = sp.get("stock", "?")
+                # fromSkuCode is the default SKU from search results
+                default_sku = sp.get("fromSkuCode") or ""
+                if default_sku:
+                    variant_data = {
+                        "variants":      [{"sku_code": default_sku, "color": "", "color_img": "",
+                                          "size": "", "stock": int(stock) if str(stock).isdigit() else 0,
+                                          "in_stock": True, "price": sale_price, "price_display": fmt_amount(sale_raw, symbol)}],
+                        "has_colors":    False,
+                        "has_sizes":     False,
+                        "unique_colors": [],
+                        "unique_sizes":  [],
+                        "default_sku":   default_sku,
+                    }
+        except Exception:
+            pass
 
-    sinfo      = static.get("info") or {}
-    sale_raw   = sinfo.get("sale_price") or sinfo.get("retail_price") or {}
-    sale_price = parse_amount(sale_raw)
-    prod_name  = sinfo.get("goods_name") or f"Product #{goods_id}"
-    prod_image = sinfo.get("goods_img")  or sinfo.get("original_img") or ""
-    is_on_sale = sinfo.get("is_on_sale") == "1"
-    stock      = sinfo.get("stock", "?")
-
-    # Variants from static endpoint
-    variant_data = parse_variants(sinfo)
+    if not sinfo and not variant_data.get("default_sku"):
+        return jsonify({"error": f"Product #{goods_id} not found. Check the product ID and try again."}), 400
 
     # ── STEP 2: Realtime endpoint — for coupons only (failure is OK) ─────────
     coupons           = []
