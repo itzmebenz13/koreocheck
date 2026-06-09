@@ -436,12 +436,24 @@ def _try_web_product_detail(goods_id: str, country: str = "PH") -> dict | None:
 
 def api_add_to_cart(goods_id: str, sku_code: str, qty: int = 1,
                     country: str = "PH") -> dict:
-    """Add item to cart. Uses ATC-specific x-gw-auth and anti-in to avoid 836000."""
-    body = (f"isAppointMall=&mall_code=1&quantity={qty}&sceneFlag="
-            f"&skuMallCode=1&fromPageName=goodsDetailAddToCart"
-            f"&goods_id={goods_id}&sku_code={sku_code}")
+    """
+    Add item to cart.
+    Uses params format from the working T2 account capture:
+    promotion_type, trace_id, promotion_id, local_goods — these are required for
+    newer products that reject the older isAppointMall/fromPageName format.
+    """
+    import time as _t
+    trace_id = f"sandroid{int(_t.time() * 1000)}{DEVICE_ID}"
+    body = (f"promotion_type=0"
+            f"&trace_id={trace_id}"
+            f"&quantity={qty}"
+            f"&mall_code=1"
+            f"&skuMallCode=1"
+            f"&goods_id={goods_id}"
+            f"&promotion_id=0"
+            f"&local_goods=0"
+            f"&sku_code={sku_code}")
     overrides = {"content-type": "application/x-www-form-urlencoded"}
-    # Use cart-specific credentials if available (different signature from product detail)
     if ATC_GW_AUTH:
         overrides["x-gw-auth"] = ATC_GW_AUTH
     if ATC_ANTI_IN:
