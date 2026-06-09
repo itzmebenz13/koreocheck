@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0">
+<title>SHEIN Price Checker</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:#07090e;--surface:#0e1018;--surface2:#14161f;--border:#1d2030;
+  --accent:#ff4b72;--accent2:#7c6ff7;--success:#00d68f;--warn:#ffcc00;
+  --text:#e2e8f0;--dim:#5a6480;--card:#111319;--red:#ff4444;--info:#38bdf8;
+}
+[data-theme="light"]{
+  --bg:#f0f2f8;--surface:#fff;--surface2:#f4f6fb;--border:#dde2ee;
+  --text:#1a1d2e;--dim:#6b7499;--card:#fff;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;transition:background .3s,color .3s}
+body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(rgba(255,75,114,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,75,114,.02) 1px,transparent 1px);background-size:48px 48px;pointer-events:none;z-index:0}
+.wrap{position:relative;z-index:1;max-width:960px;margin:0 auto;padding:28px 16px 80px}
+
+/* ── Header */
+header{display:flex;align-items:center;justify-content:space-between;margin-bottom:32px;padding-bottom:20px;border-bottom:1px solid var(--border)}
+.logo-row{display:flex;align-items:center;gap:14px}
+.logo{width:46px;height:46px;border-radius:14px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-weight:800;font-size:19px;color:#fff;box-shadow:0 0 20px rgba(255,75,114,.3);flex-shrink:0}
+h1{font-size:21px;font-weight:800;color:var(--text)}
+h1 span{color:var(--accent)}
+.sub{font-size:11px;color:var(--dim);margin-top:2px}
+.hbtns{display:flex;align-items:center;gap:8px}
+.icon-btn{background:transparent;border:1px solid var(--border);color:var(--dim);cursor:pointer;border-radius:8px;padding:7px 10px;transition:.2s;display:flex;align-items:center;gap:4px;font-size:12px}
+.icon-btn:hover{border-color:var(--accent);color:var(--accent)}
+.icon-btn svg{width:15px;height:15px}
+
+/* ── Panels */
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:14px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.25);margin-bottom:16px;transition:background .3s,border-color .3s}
+.ph{display:flex;align-items:center;justify-content:space-between;padding:13px 18px;border-bottom:1px solid var(--border);background:rgba(125,125,125,.02)}
+.pt{font-family:'Inter',sans-serif;font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--accent);display:flex;align-items:center;gap:7px}
+.pt svg{width:14px;height:14px}
+.badge{font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;letter-spacing:.3px}
+.b-yellow{background:rgba(255,204,0,.12);color:var(--warn);border:1px solid rgba(255,204,0,.3)}
+.b-green{background:rgba(0,214,143,.12);color:var(--success);border:1px solid rgba(0,214,143,.25)}
+.b-red{background:rgba(255,75,114,.12);color:var(--accent);border:1px solid rgba(255,75,114,.25)}
+.b-blue{background:rgba(56,189,248,.12);color:var(--info);border:1px solid rgba(56,189,248,.25)}
+.b-gray{background:rgba(90,100,128,.1);color:var(--dim);border:1px solid rgba(90,100,128,.2)}
+
+/* ── Search row */
+.search-row{display:flex;gap:8px;padding:14px 18px;flex-wrap:wrap}
+.search-input{flex:1;min-width:0;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:9px;padding:11px 14px;font-family:'JetBrains Mono',monospace;font-size:13px;outline:none;transition:.2s}
+.search-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(255,75,114,.1)}
+.search-input::placeholder{color:var(--dim)}
+.country-sel{background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:9px;padding:11px 12px;font-size:13px;outline:none;cursor:pointer;transition:.2s;min-width:90px}
+.country-sel:focus{border-color:var(--accent)}
+.btn{font-family:'Inter',sans-serif;font-size:13px;font-weight:700;padding:11px 20px;border-radius:9px;border:none;cursor:pointer;transition:all .2s;display:flex;align-items:center;gap:6px;justify-content:center;letter-spacing:.2px;white-space:nowrap}
+.btn:active{transform:scale(.97)}
+.btn:disabled{opacity:.55;pointer-events:none}
+.btn-primary{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;box-shadow:0 4px 15px rgba(255,75,114,.25)}
+.btn-primary:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(255,75,114,.35)}
+.btn-success{background:rgba(0,214,143,.12);color:var(--success);border:1px solid rgba(0,214,143,.3)}
+.btn-success:hover{background:var(--success);color:#000}
+.btn-ghost{background:transparent;color:var(--dim);border:1px solid var(--border)}
+.btn-ghost:hover{border-color:var(--accent);color:var(--accent)}
+.btn-danger{background:rgba(255,68,68,.08);color:var(--red);border:1px solid rgba(255,68,68,.2);padding:6px 10px;font-size:11px}
+.btn-danger:hover{background:rgba(255,68,68,.18)}
+.search-hint{font-size:11px;color:var(--dim);padding:0 18px 12px}
+/* ── Variant picker */
+.variant-picker{padding:14px 18px;display:flex;flex-direction:column;gap:12px;border-top:1px solid var(--border)}
+.vp-section{display:flex;flex-direction:column;gap:7px}
+.vp-label{font-size:11px;font-weight:700;color:var(--dim);text-transform:uppercase;letter-spacing:.8px}
+.vp-label span{color:var(--text);text-transform:none;letter-spacing:0;font-weight:600;margin-left:4px}
+.vp-options{display:flex;gap:7px;flex-wrap:wrap}
+.vp-btn{background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;user-select:none}
+.vp-btn:hover{border-color:var(--accent);color:var(--accent)}
+.vp-btn.selected{background:rgba(255,75,114,.12);border-color:var(--accent);color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.vp-btn.out-stock{opacity:.35;text-decoration:line-through;cursor:not-allowed}
+.vp-btn.out-stock:hover{border-color:var(--border);color:var(--dim)}
+.color-dot{width:14px;height:14px;border-radius:50%;border:1px solid rgba(255,255,255,.2);flex-shrink:0;display:inline-block;vertical-align:middle;margin-right:4px}
+.picker-info-row{display:flex;align-items:center;gap:10px;background:var(--surface2);border-radius:9px;padding:11px 14px}
+.picker-price{font-size:18px;font-weight:800;color:var(--accent)}
+.picker-meta{display:flex;gap:6px;flex-wrap:wrap;flex:1}
+.picker-tag{font-size:10px;padding:2px 7px;border-radius:20px}
+.picker-actions{display:flex;gap:8px;padding:0 18px 16px;justify-content:flex-end}
+
+/* ── Cart items */
+.cart-body{padding:14px 18px;display:flex;flex-direction:column;gap:10px}
+.cart-item{display:flex;align-items:center;gap:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;transition:.2s}
+.cart-item:hover{border-color:var(--accent)}
+.item-img{width:52px;height:52px;border-radius:7px;object-fit:cover;background:var(--border);flex-shrink:0}
+.item-info{flex:1;min-width:0}
+.item-name{font-size:12px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.item-meta{display:flex;align-items:center;gap:6px;margin-top:4px;flex-wrap:wrap}
+.item-price{font-size:14px;font-weight:800;color:var(--accent)}
+.item-attr{font-size:10px;color:var(--dim);background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:1px 6px}
+.item-id{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim)}
+.qty-ctrl{display:flex;align-items:center;gap:6px}
+.qty-btn{background:var(--surface);border:1px solid var(--border);color:var(--text);width:26px;height:26px;border-radius:5px;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;transition:.15s}
+.qty-btn:hover{border-color:var(--accent);color:var(--accent)}
+.qty-val{font-size:13px;font-weight:700;min-width:20px;text-align:center}
+.cart-empty{text-align:center;padding:28px;color:var(--dim);font-size:13px}
+.cart-empty span{font-size:28px;display:block;margin-bottom:8px}
+
+/* ── Checkout / Results */
+#results{display:none}
+.price-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;padding:16px 18px}
+.price-card{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px}
+.pc-label{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px}
+.pc-value{font-size:20px;font-weight:800;color:var(--text)}
+.pc-value.green{color:var(--success)}
+.pc-value.accent{color:var(--accent)}
+.pc-sub{font-size:11px;color:var(--dim);margin-top:3px}
+.shipping-row{display:flex;align-items:center;gap:8px;padding:12px 18px;border-top:1px solid var(--border);font-size:13px}
+.ship-free{color:var(--success);font-weight:700}
+.ship-paid{color:var(--warn);font-weight:600}
+.ship-more{font-size:11px;color:var(--dim);margin-left:auto}
+
+/* ── Sorted price breakdown */
+.breakdown-list{display:flex;flex-direction:column;gap:0;padding:0 18px 14px}
+.bd-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)}
+.bd-row:last-child{border-bottom:none;padding-top:10px;margin-top:4px}
+.bd-row:last-child .bd-label{font-weight:700;font-size:14px;color:var(--text)}
+.bd-row:last-child .bd-val{font-weight:800;font-size:16px;color:var(--text)}
+.bd-label{font-size:12px;color:var(--dim)}
+.bd-val{font-size:13px;font-weight:600;color:var(--text)}
+.bd-val.free{color:var(--success)}
+
+/* ── Coupon cards */
+.coupons-grid{display:flex;flex-direction:column;gap:10px;padding:14px 18px}
+.coupon-card{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;transition:all .2s}
+.coupon-card.best{border-color:var(--success);box-shadow:0 0 16px rgba(0,214,143,.12)}
+.coupon-card:hover{transform:translateY(-1px)}
+.coupon-card.ineligible{opacity:.55}
+.coupon-card.ineligible:hover{transform:none}
+.cc-head{display:flex;align-items:center;gap:8px;padding:12px 14px 8px;flex-wrap:wrap}
+.cc-type{font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;text-transform:uppercase;letter-spacing:.5px}
+.type-site{background:rgba(255,75,114,.12);color:var(--accent);border:1px solid rgba(255,75,114,.25)}
+.type-ship{background:rgba(0,214,143,.1);color:var(--success);border:1px solid rgba(0,214,143,.25)}
+.type-other{background:rgba(124,111,247,.12);color:var(--accent2);border:1px solid rgba(124,111,247,.25)}
+.cc-elig{font-size:11px;font-weight:700;margin-left:auto;display:flex;align-items:center;gap:4px}
+.cc-elig.yes{color:var(--success)}
+.cc-elig.no{color:var(--red)}
+.best-chip{background:var(--success);color:#000;font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px;letter-spacing:.5px}
+.cc-body{padding:4px 14px 14px}
+.price-line{display:flex;align-items:center;gap:8px;background:var(--surface2);border-radius:9px;padding:10px 12px;margin-bottom:10px;flex-wrap:wrap}
+.orig{font-size:12px;color:var(--dim);text-decoration:line-through}
+.arr{color:var(--dim);font-size:13px}
+.final-p{font-size:20px;font-weight:800;color:var(--success)}
+.final-p.no-disc{color:var(--dim);font-size:17px}
+.save-chip{margin-left:auto;background:rgba(0,214,143,.1);color:var(--success);border:1px solid rgba(0,214,143,.2);border-radius:20px;padding:2px 8px;font-size:11px;font-weight:700;white-space:nowrap}
+.ship-bonus{color:var(--success);font-size:12px;margin-bottom:10px;display:flex;align-items:center;gap:5px}
+.cc-details{display:flex;flex-direction:column;gap:5px}
+.cd-row{display:flex;justify-content:space-between;align-items:center;font-size:11px}
+.cd-label{color:var(--dim)}
+.cd-val{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:600}
+.cd-code{background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:2px 7px;cursor:pointer;transition:.15s}
+.cd-code:hover{border-color:var(--accent2);color:var(--accent2)}
+.thresh-warn{font-size:11px;color:var(--warn);background:rgba(255,204,0,.07);border:1px solid rgba(255,204,0,.2);border-radius:7px;padding:7px 10px;margin-top:8px;display:flex;align-items:center;gap:5px}
+
+/* ── Items in results */
+.result-items{display:flex;flex-direction:column;gap:8px;padding:14px 18px}
+.ri-row{display:flex;align-items:center;gap:10px}
+.ri-img{width:44px;height:44px;border-radius:7px;object-fit:cover;background:var(--border);flex-shrink:0}
+.ri-name{font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.ri-price{font-size:13px;font-weight:700;color:var(--text);flex-shrink:0}
+
+/* ── Points section */
+.points-row{padding:12px 18px;border-top:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.points-icon{font-size:20px}
+.points-info{flex:1}
+.points-label{font-size:12px;font-weight:600;color:var(--text)}
+.points-sub{font-size:11px;color:var(--dim);margin-top:2px}
+.points-val{font-size:16px;font-weight:800;color:var(--warn)}
+
+/* ── No coupons state */
+.no-coupons{text-align:center;padding:32px;color:var(--dim)}
+.no-coupons span{font-size:28px;display:block;margin-bottom:8px}
+
+/* ── Loading */
+.loading{text-align:center;padding:48px;color:var(--dim)}
+.spinner{width:36px;height:36px;border-radius:50%;border:3px solid var(--border);border-top-color:var(--accent);animation:spin .8s linear infinite;margin:0 auto 14px}
+.spin{animation:spin .7s linear infinite;transform-origin:center}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── Error */
+.error-box{background:rgba(255,68,68,.06);border:1px solid rgba(255,68,68,.3);border-radius:10px;padding:14px 18px;color:var(--red);font-size:13px;display:flex;gap:8px;align-items:flex-start;margin:12px 18px}
+
+/* ── Toast */
+#toast{position:fixed;bottom:22px;right:22px;background:var(--success);color:#000;padding:10px 16px;border-radius:8px;font-size:13px;font-weight:700;transform:translateY(80px);opacity:0;transition:all .3s cubic-bezier(.34,1.56,.64,1);z-index:99;pointer-events:none}
+#toast.on{transform:translateY(0);opacity:1}
+
+@media(max-width:520px){
+  .search-row{flex-wrap:wrap}
+  .search-input{width:100%}
+  .price-summary{grid-template-columns:1fr 1fr}
+  h1{font-size:17px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo-row">
+      <div class="logo">SH</div>
+      <div>
+        <h1>SHEIN <span>Price Checker</span></h1>
+        <p class="sub">Add items to cart &bull; Find the best voucher &bull; See final checkout price</p>
+      </div>
+    </div>
+    <div class="hbtns">
+      <button class="icon-btn" id="theme-btn" title="Toggle theme">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Add Item Panel -->
+  <div class="panel" id="add-panel">
+    <div class="ph">
+      <div class="pt">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
+        Add Item to Cart
+      </div>
+      <select class="country-sel" id="country-sel" style="border:none;background:transparent;font-size:12px;font-weight:600;color:var(--accent);cursor:pointer;outline:none">
+        <option value="PH">🇵🇭 PH</option>
+        <option value="TH">🇹🇭 TH</option>
+        <option value="MY">🇲🇾 MY</option>
+        <option value="SG">🇸🇬 SG</option>
+      </select>
+    </div>
+    <div class="search-row">
+      <input class="search-input" id="item-query" type="text" placeholder="Paste SHEIN product URL or enter Product ID" autocomplete="off">
+      <button class="btn btn-primary" id="lookup-btn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        Look Up
+      </button>
+    </div>
+    <p class="search-hint">Enter a SHEIN product URL or Product ID &mdash; then pick your size &amp; color before adding to cart.</p>
+    <div id="item-preview" style="display:none"></div>
+  </div>
+
+  <!-- Cart Panel -->
+  <div class="panel" id="cart-panel">
+    <div class="ph">
+      <div class="pt">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
+        Virtual Cart
+      </div>
+      <span class="badge b-yellow" id="cart-count-badge">0 items</span>
+    </div>
+    <div class="cart-body" id="cart-list">
+      <div class="cart-empty" id="cart-empty">
+        <span>🛒</span>
+        Add items above to get started
+      </div>
+    </div>
+    <div style="padding:12px 18px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-ghost" id="clear-cart-btn">Clear Cart</button>
+      <button class="btn btn-success" id="checkout-btn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+        Calculate Price
+      </button>
+    </div>
+  </div>
+
+  <!-- Results -->
+  <div id="results"></div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ─── Utilities ───────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+let _tt;
+function toast(msg, dur=2500){
+  const el=$('toast'); el.textContent=msg;
+  el.classList.add('on'); clearTimeout(_tt);
+  _tt=setTimeout(()=>el.classList.remove('on'), dur);
+}
+function esc(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function fmt(n,sym='₱'){return `${sym}${Number(n).toFixed(2)}`;}
+
+// ─── Theme ───────────────────────────────────────────────────────
+$('theme-btn').addEventListener('click',()=>{
+  const t=document.documentElement.getAttribute('data-theme');
+  document.documentElement.setAttribute('data-theme', t==='dark'?'light':'dark');
+});
+
+// ─── Cart State ──────────────────────────────────────────────────
+let cart = [];   // [{goods_id, sku_code, qty, name, price, image, color, size, symbol}]
+
+function renderCart(){
+  const list=$('cart-list'), empty=$('cart-empty'), badge=$('cart-count-badge');
+  const total = cart.reduce((s,i)=>s+i.price*i.qty,0);
+  badge.textContent = cart.length+' item'+(cart.length!==1?'s':'')+(total?` · ${cart[0].symbol||'₱'}${total.toFixed(2)}`:'');
+
+  if(cart.length===0){
+    list.innerHTML='';
+    list.appendChild(empty);
+    return;
+  }
+  list.innerHTML = cart.map((item,idx)=>`
+    <div class="cart-item" id="ci-${idx}">
+      <img class="item-img" src="${esc(item.image||'')}" onerror="this.style.background='var(--border)'" alt="">
+      <div class="item-info">
+        <div class="item-name" title="${esc(item.name)}">${esc(item.name)}</div>
+        <div class="item-meta">
+          <span class="item-price">${item.symbol||'₱'}${(item.price*item.qty).toFixed(2)}</span>
+          ${item.color?`<span class="item-attr">${esc(item.color)}</span>`:''}
+          ${item.size?`<span class="item-attr">${esc(item.size)}</span>`:''}
+          <span class="item-id">#${esc(item.goods_id)}</span>
+        </div>
+      </div>
+      <div class="qty-ctrl">
+        <button class="qty-btn" onclick="changeQty(${idx},-1)">−</button>
+        <span class="qty-val">${item.qty}</span>
+        <button class="qty-btn" onclick="changeQty(${idx},1)">+</button>
+      </div>
+      <button class="btn btn-danger" onclick="removeFromCart(${idx})">✕</button>
+    </div>`).join('');
+}
+
+function addToCart(item){
+  // Check if same goods_id + sku_code already in cart
+  const existing = cart.findIndex(c=>c.goods_id===item.goods_id&&c.sku_code===item.sku_code);
+  if(existing>=0){cart[existing].qty++;toast('✓ Qty increased');}
+  else{cart.push({...item,qty:1});toast('✓ Added to cart');}
+  renderCart();
+}
+
+function removeFromCart(idx){cart.splice(idx,1);renderCart();}
+function changeQty(idx,delta){
+  cart[idx].qty = Math.max(1,cart[idx].qty+delta);
+  renderCart();
+}
+
+$('clear-cart-btn').addEventListener('click',()=>{cart=[];renderCart();$('results').style.display='none';});
+
+// ─── Item Lookup + Variant Picker ───────────────────────────────
+$('lookup-btn').addEventListener('click', doLookup);
+$('item-query').addEventListener('keydown', e=>{ if(e.key==='Enter') doLookup(); });
+
+// Current looked-up item state
+let _lookupData = null;
+let _selColor   = null;
+let _selSize    = null;
+
+async function doLookup(){
+  const query   = $('item-query').value.trim();
+  const country = $('country-sel').value;
+  if(!query){toast('⚠ Enter a product URL or ID');return;}
+
+  const btn=$('lookup-btn');
+  btn.disabled=true; btn.innerHTML=`<svg class="spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> Loading…`;
+  $('item-preview').style.display='none';
+  _lookupData=null; _selColor=null; _selSize=null;
+
+  try{
+    const resp = await fetch('/api/item-info',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({query, country})
+    });
+    const data = await resp.json();
+    if(!resp.ok||data.error){toast('⚠ '+(data.error||'Lookup failed'));return;}
+
+    _lookupData = data;
+
+    // Auto-select if only 1 option
+    if(data.unique_colors.length===1) _selColor = data.unique_colors[0].name;
+    if(data.unique_sizes.length===1)  _selSize  = data.unique_sizes[0];
+
+    renderPicker(data);
+    $('item-query').value='';
+  }catch(e){
+    toast('⚠ Network error: '+e.message);
+  }finally{
+    btn.disabled=false; btn.innerHTML=`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Look Up`;
+  }
+}
+
+function getSizesForColor(data, color){
+  // Return sizes available for the selected color
+  return data.variants
+    .filter(v => !data.has_colors || !color || v.color===color)
+    .map(v => ({size: v.size, in_stock: v.in_stock}));
+}
+
+function findSku(data, color, size){
+  return data.variants.find(v=>{
+    const cm = !data.has_colors || !v.color || !color || v.color===color;
+    const sm = !data.has_sizes  || !v.size  || !size  || v.size===size;
+    return cm && sm;
+  });
+}
+
+function renderPicker(data){
+  const prev=$('item-preview');
+  const sym  = data.symbol||'₱';
+
+  // Info row
+  const coupTag = data.coupons.length
+    ? `<span class="picker-tag badge b-green">🎟 ${data.coupons.length} voucher${data.coupons.length>1?'s':''}</span>` : '';
+  const shipTag = data.free_shipping
+    ? `<span class="picker-tag badge b-green">✓ Free shipping</span>` : '';
+  const saleTag = data.is_on_sale
+    ? `<span class="picker-tag badge b-blue">On Sale</span>` : '';
+
+  const infoRow = `
+    <div class="variant-picker" style="border-top:none;padding-bottom:0">
+      <div class="picker-info-row">
+        <span class="picker-price">${esc(data.sale_display)}</span>
+        <div class="picker-meta">${saleTag}${shipTag}${coupTag}</div>
+        <span style="font-size:11px;color:var(--dim);font-family:'JetBrains Mono',monospace">#${esc(data.goods_id)}</span>
+      </div>
+    </div>`;
+
+  // Color picker
+  let colorSection = '';
+  if(data.has_colors && data.unique_colors.length>0){
+    const btns = data.unique_colors.map(c=>{
+      const sel = _selColor===c.name ? 'selected' : '';
+      const dot = c.img ? `<span class="color-dot" style="background:${esc(c.img)}"></span>` : '';
+      return `<button class="vp-btn ${sel}" onclick="selectColor('${esc(c.name)}')">${dot}${esc(c.name)}</button>`;
+    }).join('');
+    const label = _selColor ? `<span>${esc(_selColor)}</span>` : '';
+    colorSection = `
+      <div class="vp-section">
+        <div class="vp-label">Color${label}</div>
+        <div class="vp-options">${btns}</div>
+      </div>`;
+  }
+
+  // Size picker — filter by selected color
+  let sizeSection = '';
+  if(data.has_sizes && data.unique_sizes.length>0){
+    const availSizes = getSizesForColor(data, _selColor);
+    const btns = data.unique_sizes.map(sz=>{
+      const info   = availSizes.find(s=>s.size===sz) || {in_stock:false};
+      const sel    = _selSize===sz ? 'selected' : '';
+      const oos    = !info.in_stock ? 'out-stock' : '';
+      return `<button class="vp-btn ${sel} ${oos}" onclick="${info.in_stock?`selectSize('${esc(sz)}')`:'void(0)'}">${esc(sz)}</button>`;
+    }).join('');
+    const label = _selSize ? `<span>${esc(_selSize)}</span>` : '';
+    sizeSection = `
+      <div class="vp-section">
+        <div class="vp-label">Size${label}</div>
+        <div class="vp-options">${btns}</div>
+      </div>`;
+  }
+
+  // Stock info for current selection
+  const curSku = findSku(data, _selColor, _selSize);
+  const stockNote = curSku
+    ? (curSku.in_stock
+        ? (curSku.stock<10?`<span style="color:var(--warn);font-size:11px">⚠ Only ${curSku.stock} left in stock</span>`:'')
+        : `<span style="color:var(--red);font-size:11px">✗ Out of stock</span>`)
+    : (!data.has_colors&&!data.has_sizes?'':
+       `<span style="color:var(--dim);font-size:11px">${data.has_colors&&!_selColor?'Select a color':''} ${data.has_sizes&&!_selSize?'Select a size':''}</span>`);
+
+  // Can add to cart?
+  const needColor = data.has_colors && !_selColor;
+  const needSize  = data.has_sizes  && !_selSize;
+  const canAdd    = !needColor && !needSize && (!curSku || curSku.in_stock);
+  const selSku    = curSku ? curSku.sku_code : (data.default_sku||'');
+
+  const actions = `
+    <div class="picker-actions">
+      <div style="margin-right:auto;display:flex;align-items:center">${stockNote}</div>
+      <button class="btn btn-ghost" onclick="dismissPicker()">Cancel</button>
+      <button class="btn btn-success" id="add-to-cart-btn" ${canAdd?'':'disabled'}
+        onclick="addPickerItem('${esc(data.goods_id)}','${esc(selSku)}',${data.sale_price},'${esc(sym)}')">
+        + Add to Cart
+      </button>
+    </div>`;
+
+  prev.style.display='block';
+  prev.innerHTML=`${infoRow}<div class="variant-picker">${colorSection}${sizeSection}</div>${actions}`;
+}
+
+function selectColor(name){
+  _selColor = name;
+  // Reset size if the new color doesn't have the currently selected size
+  if(_lookupData&&_selSize){
+    const valid = getSizesForColor(_lookupData, name).some(s=>s.size===_selSize);
+    if(!valid) _selSize=null;
+  }
+  renderPicker(_lookupData);
+}
+
+function selectSize(sz){
+  _selSize = sz;
+  renderPicker(_lookupData);
+}
+
+function dismissPicker(){
+  $('item-preview').style.display='none';
+  _lookupData=null; _selColor=null; _selSize=null;
+}
+
+function addPickerItem(goods_id, sku_code, price, symbol){
+  if(!_lookupData) return;
+  const curSku = findSku(_lookupData, _selColor, _selSize);
+  addToCart({
+    goods_id,
+    sku_code,
+    name:   `Product #${goods_id}`,
+    price,
+    image:  '',
+    color:  _selColor || '',
+    size:   _selSize  || '',
+    symbol,
+    stock:  curSku ? curSku.stock : 0,
+  });
+  dismissPicker();
+}
+
+// ─── Checkout ────────────────────────────────────────────────────
+$('checkout-btn').addEventListener('click', doCheckout);
+
+async function doCheckout(){
+  if(cart.length===0){toast('⚠ Add items first');return;}
+  const country = $('country-sel').value;
+  const btn=$('checkout-btn');
+  btn.disabled=true; btn.textContent='Calculating…';
+
+  const results=$('results');
+  results.style.display='block';
+  results.innerHTML=`<div class="loading"><div class="spinner"></div><p>Adding items &amp; calculating checkout…</p></div>`;
+
+  try{
+    const resp = await fetch('/api/checkout',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({items: cart, country})
+    });
+    const data = await resp.json();
+
+    if(!resp.ok||data.error){
+      results.innerHTML=`<div class="error-box">⚠ ${esc(data.error||'Checkout failed.')}</div>`;
+      return;
+    }
+    renderResults(data);
+  }catch(e){
+    results.innerHTML=`<div class="error-box">⚠ Network error: ${esc(e.message)}</div>`;
+  }finally{
+    btn.disabled=false;
+    btn.innerHTML=`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> Calculate Price`;
+  }
+}
+
+// ─── Render Results ──────────────────────────────────────────────
+function couponTypeClass(t){
+  t=(t||'').toLowerCase();
+  if(t.includes('ship')) return 'type-ship';
+  if(t.includes('site')||t.includes('sitewide')) return 'type-site';
+  return 'type-other';
+}
+
+function renderResults(data){
+  const sym = data.symbol||'₱';
+  const R=$('results');
+
+  // ── Items section
+  const itemsHtml = `
+    <div class="panel">
+      <div class="ph"><div class="pt">🛍 Order Items (${data.items.length})</div></div>
+      <div class="result-items">
+        ${data.items.map(i=>`
+          <div class="ri-row">
+            <img class="ri-img" src="${esc(i.image||'')}" onerror="this.style.background='var(--border)'" alt="">
+            <div class="ri-name">${esc(i.name)} ${i.color?`<span style="color:var(--dim);font-size:10px">${esc(i.color)}</span>`:''} ${i.size?`<span style="color:var(--dim);font-size:10px">${esc(i.size)}</span>`:''}</div>
+            <div class="ri-price">${sym}${(i.sale_price*i.qty).toFixed(2)}${i.qty>1?` <span style="color:var(--dim);font-size:10px">×${i.qty}</span>`:''}</div>
+          </div>`).join('')}
+      </div>
+    </div>`;
+
+  // ── Price summary cards
+  const shippingVal = data.shipping.free
+    ? `<div class="pc-value green">FREE</div><div class="pc-sub">✓ Free shipping applies</div>`
+    : `<div class="pc-value accent">${sym}${data.shipping.cost.toFixed(2)}</div>${data.shipping.need_more_for_free>0?`<div class="pc-sub">Add ${esc(data.shipping.need_more_display)} more for free shipping</div>`:''}`;
+
+  const pointsCard = data.points.available>0
+    ? `<div class="price-card">
+        <div class="pc-label">SHEIN Points</div>
+        <div class="pc-value" style="color:var(--warn)">${data.points.available.toLocaleString()}</div>
+        ${data.points.max_discount>0?`<div class="pc-sub">Up to ${sym}${data.points.max_discount.toFixed(2)} off</div>`:'<div class="pc-sub">Not enough to redeem</div>'}
+      </div>` : '';
+
+  const summaryHtml = `
+    <div class="panel">
+      <div class="ph"><div class="pt">💰 Checkout Summary</div></div>
+      <div class="price-summary">
+        <div class="price-card">
+          <div class="pc-label">Subtotal</div>
+          <div class="pc-value">${sym}${data.subtotal.toFixed(2)}</div>
+          <div class="pc-sub">${data.items.length} item(s)</div>
+        </div>
+        <div class="price-card">
+          <div class="pc-label">Shipping</div>
+          ${shippingVal}
+        </div>
+        <div class="price-card">
+          <div class="pc-label">Total (no voucher)</div>
+          <div class="pc-value accent">${sym}${data.grand_total.toFixed(2)}</div>
+          <div class="pc-sub">Before any voucher</div>
+        </div>
+        ${pointsCard}
+      </div>
+      ${data.shipping.need_more_for_free>0?`
+      <div class="shipping-row">
+        <span>🚚</span>
+        <span class="ship-paid">Shipping: ${sym}${data.shipping.cost.toFixed(2)}</span>
+        <span class="ship-more">Add ${esc(data.shipping.need_more_display)} more to qualify for free shipping</span>
+      </div>`:''}
+    </div>`;
+
+  // ── Official price breakdown rows
+  let breakdownHtml = '';
+  if(data.sorted_price&&data.sorted_price.length>0){
+    const rows=data.sorted_price.map(r=>`
+      <div class="bd-row">
+        <span class="bd-label">${esc(r.local_name||r.type)}</span>
+        <span class="bd-val ${r.price_with_symbol==='FREE'?'free':''}">${esc(r.price_with_symbol||'')}</span>
+      </div>`).join('');
+    breakdownHtml=`
+      <div class="panel">
+        <div class="ph"><div class="pt">📋 Checkout Breakdown</div></div>
+        <div class="breakdown-list">${rows}</div>
+      </div>`;
+  }
+
+  // ── Voucher comparison
+  let voucherHtml='';
+  if(data.coupons&&data.coupons.length>0){
+    const cards = data.coupons.map(c=>{
+      const isBest = data.best_coupon&&c.code===data.best_coupon.code;
+      const elig   = c.eligible;
+      const typeC  = couponTypeClass(c.coupon_type);
+
+      let priceSection='';
+      if(c.type==='free_shipping'&&elig){
+        priceSection=`<div class="ship-bonus">🚚 Free shipping applies with this voucher!</div>`;
+      } else if(elig&&c.discount>0){
+        priceSection=`
+          <div class="price-line">
+            <span class="orig">${sym}${data.grand_total.toFixed(2)}</span>
+            <span class="arr">→</span>
+            <span class="final-p">${sym}${c.final_total.toFixed(2)}</span>
+            <span class="save-chip">Save ${sym}${c.discount.toFixed(2)} (${c.savings_pct}%)</span>
+          </div>`;
+      } else {
+        priceSection=`
+          <div class="price-line">
+            <span class="final-p no-disc">${sym}${data.grand_total.toFixed(2)}</span>
+            <span class="save-chip" style="background:rgba(90,100,128,.1);color:var(--dim);border-color:transparent">No discount</span>
+          </div>`;
+      }
+
+      const threshWarn=(!elig&&c.min_order>0)?`
+        <div class="thresh-warn">⚠ Min order ${sym}${c.min_order.toFixed(0)} required — need ${sym}${(c.min_order-data.grand_total).toFixed(0)} more</div>`:'';
+
+      return `
+        <div class="coupon-card ${isBest?'best':''} ${elig?'':'ineligible'}">
+          <div class="cc-head">
+            <span class="cc-type ${typeC}">${esc(c.coupon_type)}</span>
+            ${isBest?'<span class="best-chip">⭐ BEST</span>':''}
+            <span class="cc-elig ${elig?'yes':'no'}">${elig?'✓ Eligible':'✗ Not eligible'}</span>
+          </div>
+          <div class="cc-body">
+            ${priceSection}
+            <div class="cc-details">
+              <div class="cd-row"><span class="cd-label">Discount</span><span style="color:var(--accent);font-size:13px;font-weight:700">${esc(c.discount_str)}</span></div>
+              <div class="cd-row"><span class="cd-label">Min order</span><span class="cd-val">${esc(c.threshold_str)}</span></div>
+              ${c.code?`<div class="cd-row"><span class="cd-label">Code</span><span class="cd-val cd-code" onclick="copyCode('${esc(c.code)}')">${esc(c.code)}</span></div>`:''}
+              ${c.tip?`<div class="cd-row"><span class="cd-label">Tip</span><span style="color:var(--dim);font-size:10px;text-align:right;max-width:200px">${esc(c.tip)}</span></div>`:''}
+            </div>
+            ${threshWarn}
+          </div>
+        </div>`;
+    }).join('');
+
+    voucherHtml=`
+      <div class="panel">
+        <div class="ph">
+          <div class="pt">🎟 Voucher Comparison (${data.coupon_count})</div>
+          ${data.best_coupon?`<span class="badge b-green">Best: ${sym}${(data.grand_total-data.best_coupon.final_total).toFixed(2)} saved</span>`:''}
+        </div>
+        <div class="coupons-grid">${cards}</div>
+      </div>`;
+  } else {
+    voucherHtml=`
+      <div class="panel">
+        <div class="ph"><div class="pt">🎟 Vouchers</div></div>
+        <div class="no-coupons"><span>🎟</span>No applicable vouchers found for this cart.</div>
+      </div>`;
+  }
+
+  R.style.display='block';
+  R.innerHTML = itemsHtml + summaryHtml + breakdownHtml + voucherHtml;
+}
+
+function copyCode(code){
+  navigator.clipboard.writeText(code)
+    .then(()=>toast('✓ Copied: '+code))
+    .catch(()=>toast('Code: '+code));
+}
+</script>
+</body>
+</html>
