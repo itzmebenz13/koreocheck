@@ -447,7 +447,9 @@ def do_checkout():
             return jsonify({"error": f"Add to cart failed for {gid}: {exc}"}), 502
 
         if str(atc.get("code")) != "0":
-            return jsonify({"error": atc.get("msg") or f"Could not add item {gid} to cart."}), 400
+            shein_code = atc.get("code", "?")
+            shein_msg  = atc.get("msg") or atc.get("message") or ""
+            return jsonify({"error": f"Add to cart failed [code={shein_code}]: {shein_msg or 'no message'} — item {gid}"}), 400
 
         cart_info = (atc.get("info") or {}).get("cart") or {}
         cart_id   = cart_info.get("id")
@@ -608,14 +610,35 @@ def debug():
         msg    = result.get("msg", "")
         info   = result.get("info") or {}
 
-        # Safe summary — don't expose full response (privacy)
+        # Get first available sku_code for add-to-cart test
+        mls      = info.get("multiLevelSaleAttribute") or {}
+        sku_list = mls.get("sku_list") or []
+        test_sku = sku_list[0].get("sku_code") if sku_list else ""
+
+        # Test add-to-cart if sku available
+        atc_result = {}
+        if test_sku:
+            try:
+                atc = api_add_to_cart(goods_id, test_sku, 1, country)
+                atc_code = str(atc.get("code", "?"))
+                atc_msg  = atc.get("msg") or ""
+                cart_id  = (atc.get("info") or {}).get("cart", {}).get("id")
+                atc_result = {"code": atc_code, "msg": atc_msg, "cart_id": cart_id}
+                # Clean up immediately
+                if cart_id:
+                    api_delete_cart_items([cart_id], country)
+            except Exception as e:
+                atc_result = {"error": str(e)}
+
         return jsonify({
             "shein_code":        code,
             "shein_msg":         msg,
             "goods_id_returned": info.get("goods_id"),
             "sale_price":        (info.get("sale_price") or {}).get("amountWithSymbol"),
             "stock":             info.get("stock"),
-            "sku_count":         len((info.get("multiLevelSaleAttribute") or {}).get("sku_list") or []),
+            "sku_count":         len(sku_list),
+            "test_sku":          test_sku,
+            "add_to_cart_test":  atc_result,
             "coupon_count":      len(((info.get("cmpCouponInfo") or {}).get("cmpCouponInfoList")) or []),
             "env_check": {
                 "TOKEN_set":       bool(TOKEN),
