@@ -284,18 +284,35 @@ def api_product_detail(goods_id: str, country: str = "PH") -> dict:
             except Exception:
                 pass
 
-        # Last resort: bare minimum params, no mallCode
+        # ── Fallback A: strip x-gw-auth + anti-in (signature headers may be product-specific)
         try:
-            bare = {
-                "goods_id": goods_id, "sourceFrom": "goods_detail",
-                "visitNumOfDay": "1", "isShowMall": "1",
-                "isPaidMember": "0", "timeZone": tz,
-            }
+            h_stripped = dict(headers(country))
+            h_stripped.pop("x-gw-auth", None)
+            h_stripped.pop("anti-in", None)
             r3 = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
-                        params=bare, headers=headers(country),
+                        params=params, headers=h_stripped,
                         timeout=15, verify=False).json()
             if str(r3.get("code")) == "0":
                 return r3
+        except Exception:
+            pass
+
+        # ── Fallback B: bare minimum params + no signature headers
+        try:
+            h_bare = dict(headers(country))
+            h_bare.pop("x-gw-auth", None)
+            h_bare.pop("anti-in", None)
+            h_bare.pop("x-cs-random", None)
+            bare = {
+                "goods_id": goods_id, "sourceFrom": "goods_detail",
+                "visitNumOfDay": "1", "mallCode": "1",
+                "isPaidMember": "0", "timeZone": tz,
+            }
+            r4 = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
+                        params=bare, headers=h_bare,
+                        timeout=15, verify=False).json()
+            if str(r4.get("code")) == "0":
+                return r4
         except Exception:
             pass
 
@@ -895,11 +912,32 @@ def debug_product():
                     step("retry_bare_params", "✅ OK (bare params worked)", code=code3)
                     info1 = r3.get("info") or {}
                 else:
-                    step("retry_bare_params", "❌ FAILED", code=code3,
-                         msg=r3.get("msg") or "",
-                         detail={"hint": "All param combinations failed — product may require different auth or is not available in this country."})
+                    step("retry_bare_params", "❌ FAILED", code=code3, msg=r3.get("msg") or "")
             except Exception as exc:
                 step("retry_bare_params", "💥 EXCEPTION", msg=str(exc))
+
+        # ── Try without signature headers (x-gw-auth may be goods_id-specific)
+        for label, pop_keys in [
+            ("no_gw_auth",     ["x-gw-auth", "anti-in"]),
+            ("no_sig_headers", ["x-gw-auth", "anti-in", "x-cs-random"]),
+        ]:
+            try:
+                h_test = dict(headers(country))
+                for k in pop_keys:
+                    h_test.pop(k, None)
+                r_t = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
+                             params=params_full, headers=h_test,
+                             timeout=15, verify=False).json()
+                ct = str(r_t.get("code", "?"))
+                if ct == "0":
+                    step(label, f"✅ OK — removing {pop_keys} fixed it!", code=ct)
+                    info1 = r_t.get("info") or {}
+                    break
+                else:
+                    step(label, "❌ FAILED", code=ct, msg=r_t.get("msg") or "",
+                         detail={"removed_headers": pop_keys})
+            except Exception as exc:
+                step(label, "💥 EXCEPTION", msg=str(exc))
 
     # ── Step 3: Add-to-cart test (requires ATC creds)
     test_sku = ""
