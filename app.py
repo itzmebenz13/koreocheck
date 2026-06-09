@@ -284,39 +284,96 @@ def api_product_detail(goods_id: str, country: str = "PH") -> dict:
             except Exception:
                 pass
 
-        # ── Fallback A: strip x-gw-auth + anti-in (signature headers may be product-specific)
-        try:
-            h_stripped = dict(headers(country))
-            h_stripped.pop("x-gw-auth", None)
-            h_stripped.pop("anti-in", None)
-            r3 = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
-                        params=params, headers=h_stripped,
-                        timeout=15, verify=False).json()
-            if str(r3.get("code")) == "0":
-                return r3
-        except Exception:
-            pass
+        # ── Fallback A: strip all optional security headers
+        for drop in [
+            ["x-gw-auth", "anti-in"],
+            ["x-gw-auth", "anti-in", "x-cs-random"],
+            ["x-gw-auth", "anti-in", "x-cs-random", "armortoken"],
+            ["x-gw-auth", "anti-in", "x-cs-random", "armortoken", "x-ad-flag"],
+        ]:
+            try:
+                h_test = dict(headers(country))
+                for k in drop:
+                    h_test.pop(k, None)
+                r_t = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
+                             params=params, headers=h_test,
+                             timeout=15, verify=False).json()
+                if str(r_t.get("code")) == "0":
+                    return r_t
+            except Exception:
+                pass
 
-        # ── Fallback B: bare minimum params + no signature headers
-        try:
-            h_bare = dict(headers(country))
-            h_bare.pop("x-gw-auth", None)
-            h_bare.pop("anti-in", None)
-            h_bare.pop("x-cs-random", None)
-            bare = {
-                "goods_id": goods_id, "sourceFrom": "goods_detail",
-                "visitNumOfDay": "1", "mallCode": "1",
-                "isPaidMember": "0", "timeZone": tz,
-            }
-            r4 = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
-                        params=bare, headers=h_bare,
-                        timeout=15, verify=False).json()
-            if str(r4.get("code")) == "0":
-                return r4
-        except Exception:
-            pass
+        # ── Fallback B: try the SHEIN web API (m.shein.com) — different auth model
+        web_result = _try_web_product_detail(goods_id, country)
+        if web_result and str(web_result.get("code")) == "0":
+            return web_result
 
     return result
+
+
+def _try_web_product_detail(goods_id: str, country: str = "PH") -> dict | None:
+    """
+    Fallback: fetch product info from the SHEIN web API (m.shein.com).
+    Uses lighter security — no armortoken required for basic product info.
+    """
+    country_lower = country.lower()
+    web_base = f"https://m.shein.com/{country_lower}"
+    tz = TIMEZONE_MAP.get(country.upper(), "Asia/Manila")
+    cid = COUNTRY_ID_MAP.get(country.upper(), "170")
+
+    web_headers = {
+        "accept":           "application/json, text/plain, */*",
+        "user-agent":       "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+        "origin":           "https://m.shein.com",
+        "referer":          f"{web_base}/",
+        "accept-language":  "en-US,en;q=0.9",
+        "x-requested-with": "XMLHttpRequest",
+    }
+    if SMDEVICE_ID:
+        web_headers["smdeviceid"] = SMDEVICE_ID
+    if CSRF_TOKEN := os.environ.get("CSRF_TOKEN", ""):
+        web_headers["x-csrf-token"] = CSRF_TOKEN
+    if CS_RANDOM:
+        web_headers["x-cs-random"] = CS_RANDOM
+    if GW_AUTH:
+        web_headers["x-gw-auth"] = GW_AUTH
+    if ARMOR_TOKEN:
+        web_headers["armortoken"] = ARMOR_TOKEN
+    if COOKIE:
+        web_headers["cookie"] = COOKIE
+    if ANTI_IN:
+        web_headers["anti-in"] = ANTI_IN
+    if AD_FLAG:
+        web_headers["x-ad-flag"] = AD_FLAG
+
+    params = {
+        "_ver": "1.1.8", "_lang": "en",
+        "goods_id": goods_id, "mallCode": "1",
+        "localSiteQueryFlag": "0", "countryId": cid,
+        "isPaidMember": "0", "timeZone": tz,
+        "visitNumOfDay": "1", "sourceFrom": "goods_detail",
+    }
+
+    try:
+        resp = rq.get(
+            f"{web_base}/bff-api/product/get_goods_detail_realtime_data",
+            params=params, headers=web_headers, timeout=15, verify=False
+        )
+        return resp.json()
+    except Exception:
+        pass
+
+    # Also try without /bff-api/ prefix
+    try:
+        resp = rq.get(
+            f"https://m.shein.com/api/product/get_goods_detail_realtime_data",
+            params=params, headers=web_headers, timeout=15, verify=False
+        )
+        return resp.json()
+    except Exception:
+        pass
+
+    return None
 
 
 def api_add_to_cart(goods_id: str, sku_code: str, qty: int = 1,
@@ -484,6 +541,103 @@ def index():
     return render_template("index.html")
 
 
+def _item_info_via_atc(goods_id: str, country: str) -> tuple:
+    """
+    Fallback product info when product detail realtime returns 836000.
+    Uses add-to-cart probe to get name, image, price, sku_code.
+    Returns no coupon data (cmpCouponInfo is only available via product detail),
+    but the item can still be added to the virtual cart and price-checked.
+    """
+    currency = CURRENCY_MAP.get(country, "PHP")
+    symbol   = SYMBOL_MAP.get(currency, "₱")
+
+    # We need a sku_code to do ATC — try the first SKU from the goods_id
+    # Use a well-known default approach: add with empty sku and let SHEIN pick
+    # Try several sku_code guesses or just send without sku_code (some SHEIN versions allow it)
+    atc_body = (f"isAppointMall=&mall_code=1&quantity=1&sceneFlag="
+                f"&skuMallCode=1&fromPageName=goodsDetailAddToCart"
+                f"&goods_id={goods_id}&sku_code=")
+    h_overrides = {"content-type": "application/x-www-form-urlencoded"}
+    if ATC_GW_AUTH: h_overrides["x-gw-auth"] = ATC_GW_AUTH
+    if ATC_ANTI_IN: h_overrides["anti-in"]   = ATC_ANTI_IN
+
+    prod_name  = f"Product #{goods_id}"
+    prod_image = ""
+    prod_price = 0.0
+    prod_display = f"{symbol}0"
+    variants   = []
+    sku_list_raw = []
+
+    try:
+        atc_resp = rq.post(f"{API_HOST}/order/add_to_cart",
+                           params={"goods_id": goods_id},
+                           data=atc_body,
+                           headers=headers(country, h_overrides),
+                           timeout=10, verify=False)
+        atc = atc_resp.json()
+
+        if str(atc.get("code")) == "0":
+            cart_obj = ((atc.get("info") or {}).get("cart") or {})
+            cart_id  = cart_obj.get("id")
+            product  = cart_obj.get("product") or {}
+            prod_name  = product.get("goods_name") or prod_name
+            prod_image = product.get("goods_thumb") or product.get("goods_img") or ""
+            prod_price = parse_amount(product.get("salePrice") or {})
+            prod_display = fmt_amount(product.get("salePrice"), symbol)
+
+            # Extract sku_sale_attr for variant info
+            sku_attrs = product.get("sku_sale_attr") or []
+            color = next((a.get("attr_value_name") for a in sku_attrs if a.get("attr_name_en") == "Color"), "")
+            size  = next((a.get("attr_value_name") for a in sku_attrs if a.get("attr_name_en") == "Size"), "")
+            sku_code = product.get("sku_code") or cart_obj.get("sku_code") or ""
+
+            if sku_code:
+                variants = [{
+                    "sku_code": sku_code, "color": color,
+                    "color_img": "", "size": size,
+                    "stock": int(product.get("stock") or 0),
+                    "in_stock": bool(product.get("is_stock_enough") == "1"),
+                    "price": prod_price, "price_display": prod_display,
+                }]
+
+            if cart_id:
+                try:
+                    api_delete_cart_items([cart_id], country)
+                except Exception:
+                    _enqueue_cleanup([cart_id], country)
+
+    except Exception:
+        pass
+
+    # Return partial info — no coupon data available
+    has_sizes  = any(v.get("size")  for v in variants)
+    has_colors = len(set(v.get("color") for v in variants if v.get("color"))) > 1
+    default_sku = variants[0]["sku_code"] if variants else ""
+
+    return jsonify({
+        "goods_id":      goods_id,
+        "name":          prod_name,
+        "image":         prod_image,
+        "country":       country,
+        "currency":      currency,
+        "symbol":        symbol,
+        "sale_price":    prod_price,
+        "sale_display":  prod_display,
+        "stock":         variants[0]["stock"] if variants else "?",
+        "is_on_sale":    False,
+        "free_shipping": False,
+        "shipping_time": "",
+        "coupons":       [],
+        "coupons_unavailable": True,   # flag for frontend to show notice
+        "variants":      variants,
+        "has_colors":    has_colors,
+        "has_sizes":     has_sizes,
+        "unique_colors": [],
+        "unique_sizes":  [v["size"] for v in variants if v.get("size")],
+        "default_sku":   default_sku,
+    })
+
+
 @app.route("/api/item-info", methods=["POST"])
 def item_info():
     """
@@ -504,10 +658,15 @@ def item_info():
         return jsonify({"error": f"Request failed: {exc}"}), 502
 
     if str(detail.get("code")) != "0":
-        shein_code = detail.get("code", "?")
-        shein_msg  = detail.get("msg") or detail.get("message") or ""
-        if str(shein_code) == "836000":
-            shein_msg = "Product not accessible. Try a different country (TH/MY/SG), or this product may be region-locked."
+        shein_code = str(detail.get("code", "?"))
+
+        # ── 836000 fallback: use add-to-cart probe to get basic product info
+        # The ATC endpoint works even when product detail realtime is restricted.
+        # We get name, image, price, sku — just no coupon data.
+        if shein_code == "836000" and ATC_GW_AUTH and ATC_ANTI_IN:
+            return _item_info_via_atc(goods_id, country)
+
+        shein_msg = detail.get("msg") or detail.get("message") or ""
         return jsonify({"error": shein_msg or f"SHEIN API error (code={shein_code})"}), 400
 
     info      = detail.get("info") or {}
@@ -916,10 +1075,12 @@ def debug_product():
             except Exception as exc:
                 step("retry_bare_params", "💥 EXCEPTION", msg=str(exc))
 
-        # ── Try without signature headers (x-gw-auth may be goods_id-specific)
+        # ── Try removing more headers progressively (armortoken may be the culprit)
         for label, pop_keys in [
-            ("no_gw_auth",     ["x-gw-auth", "anti-in"]),
-            ("no_sig_headers", ["x-gw-auth", "anti-in", "x-cs-random"]),
+            ("no_gw_auth",         ["x-gw-auth", "anti-in"]),
+            ("no_sig_headers",     ["x-gw-auth", "anti-in", "x-cs-random"]),
+            ("no_armortoken",      ["x-gw-auth", "anti-in", "x-cs-random", "armortoken"]),
+            ("no_all_sec_headers", ["x-gw-auth", "anti-in", "x-cs-random", "armortoken", "x-ad-flag"]),
         ]:
             try:
                 h_test = dict(headers(country))
