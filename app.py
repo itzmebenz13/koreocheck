@@ -541,100 +541,156 @@ def index():
     return render_template("index.html")
 
 
+def _get_sku_via_main_detail(goods_id: str, country: str) -> list:
+    """
+    Try to get sku_codes from the main product detail endpoint.
+    This has different security than the realtime endpoint and may work when realtime fails.
+    Returns list of {sku_code, color, size, stock, in_stock}.
+    """
+    endpoints = [
+        f"{API_HOST}/product/main/goods_detail_v4",
+        f"{API_HOST}/product/main/sku_info",
+        f"{API_HOST}/product/main/goods_skc_sku_info",
+    ]
+    for ep in endpoints:
+        try:
+            params = {
+                "goods_id": goods_id, "mallCode": "1",
+                "sourceFrom": "goods_detail", "isShowMall": "0",
+            }
+            resp = rq.get(ep, params=params, headers=headers(country),
+                          timeout=10, verify=False)
+            data = resp.json()
+            if str(data.get("code")) != "0":
+                continue
+            info = data.get("info") or {}
+            # Try common paths where sku_list might be
+            for path in [
+                lambda i: (i.get("multiLevelSaleAttribute") or {}).get("sku_list") or [],
+                lambda i: i.get("sku_list") or [],
+                lambda i: i.get("skuList") or [],
+            ]:
+                sku_list = path(info)
+                if sku_list:
+                    result = []
+                    for sku in sku_list:
+                        attrs = sku.get("sku_sale_attr") or []
+                        color = next((a.get("attr_value_name") for a in attrs if a.get("attr_name_en") == "Color"), "")
+                        size  = next((a.get("attr_value_name") for a in attrs if a.get("attr_name_en") == "Size"), "")
+                        stock = int(sku.get("stock") or 0)
+                        result.append({
+                            "sku_code": sku.get("sku_code") or "",
+                            "color": color, "size": size,
+                            "stock": stock, "in_stock": stock > 0,
+                        })
+                    if result:
+                        return result
+        except Exception:
+            pass
+    return []
+
+
 def _item_info_via_atc(goods_id: str, country: str) -> tuple:
     """
     Fallback product info when product detail realtime returns 836000.
-    Uses add-to-cart probe to get name, image, price, sku_code.
-    Returns no coupon data (cmpCouponInfo is only available via product detail),
-    but the item can still be added to the virtual cart and price-checked.
+    Step 1: Try main product detail endpoint to get sku_codes.
+    Step 2: Use first available sku_code to do ATC probe → gets name, image, price.
+    Returns without coupon data but item is fully usable.
     """
     currency = CURRENCY_MAP.get(country, "PHP")
     symbol   = SYMBOL_MAP.get(currency, "₱")
 
-    # We need a sku_code to do ATC — try the first SKU from the goods_id
-    # Use a well-known default approach: add with empty sku and let SHEIN pick
-    # Try several sku_code guesses or just send without sku_code (some SHEIN versions allow it)
-    atc_body = (f"isAppointMall=&mall_code=1&quantity=1&sceneFlag="
-                f"&skuMallCode=1&fromPageName=goodsDetailAddToCart"
-                f"&goods_id={goods_id}&sku_code=")
-    h_overrides = {"content-type": "application/x-www-form-urlencoded"}
-    if ATC_GW_AUTH: h_overrides["x-gw-auth"] = ATC_GW_AUTH
-    if ATC_ANTI_IN: h_overrides["anti-in"]   = ATC_ANTI_IN
-
-    prod_name  = f"Product #{goods_id}"
-    prod_image = ""
-    prod_price = 0.0
+    prod_name    = f"Product #{goods_id}"
+    prod_image   = ""
+    prod_price   = 0.0
     prod_display = f"{symbol}0"
-    variants   = []
-    sku_list_raw = []
+    variants     = []
 
-    try:
-        atc_resp = rq.post(f"{API_HOST}/order/add_to_cart",
-                           params={"goods_id": goods_id},
-                           data=atc_body,
-                           headers=headers(country, h_overrides),
-                           timeout=10, verify=False)
-        atc = atc_resp.json()
+    # ── Step 1: Get sku_codes via main product detail (different security path)
+    sku_entries = _get_sku_via_main_detail(goods_id, country)
+    first_sku   = next((s["sku_code"] for s in sku_entries if s.get("sku_code") and s.get("in_stock")), "") \
+                  or next((s["sku_code"] for s in sku_entries if s.get("sku_code")), "")
 
-        if str(atc.get("code")) == "0":
-            cart_obj = ((atc.get("info") or {}).get("cart") or {})
-            cart_id  = cart_obj.get("id")
-            product  = cart_obj.get("product") or {}
-            prod_name  = product.get("goods_name") or prod_name
-            prod_image = product.get("goods_thumb") or product.get("goods_img") or ""
-            prod_price = parse_amount(product.get("salePrice") or {})
-            prod_display = fmt_amount(product.get("salePrice"), symbol)
+    if not first_sku:
+        # Can't do ATC without a sku_code — return minimal placeholder
+        return jsonify({
+            "error": f"Product #{goods_id} is not accessible via the current credentials. "
+                     f"The product may require different auth or is not available in {country}."
+        }), 400
 
-            # Extract sku_sale_attr for variant info
-            sku_attrs = product.get("sku_sale_attr") or []
-            color = next((a.get("attr_value_name") for a in sku_attrs if a.get("attr_name_en") == "Color"), "")
-            size  = next((a.get("attr_value_name") for a in sku_attrs if a.get("attr_name_en") == "Size"), "")
-            sku_code = product.get("sku_code") or cart_obj.get("sku_code") or ""
+    # ── Step 2: ATC probe with known sku_code → get name, image, price
+    if ATC_GW_AUTH and ATC_ANTI_IN:
+        try:
+            atc_body = (f"isAppointMall=&mall_code=1&quantity=1&sceneFlag="
+                        f"&skuMallCode=1&fromPageName=goodsDetailAddToCart"
+                        f"&goods_id={goods_id}&sku_code={first_sku}")
+            h_overrides = {"content-type": "application/x-www-form-urlencoded"}
+            if ATC_GW_AUTH: h_overrides["x-gw-auth"] = ATC_GW_AUTH
+            if ATC_ANTI_IN: h_overrides["anti-in"]   = ATC_ANTI_IN
+            atc_resp = rq.post(f"{API_HOST}/order/add_to_cart",
+                               params={"goods_id": goods_id},
+                               data=atc_body,
+                               headers=headers(country, h_overrides),
+                               timeout=8, verify=False)
+            atc = atc_resp.json()
+            if str(atc.get("code")) == "0":
+                cart_obj = ((atc.get("info") or {}).get("cart") or {})
+                cart_id  = cart_obj.get("id")
+                product  = cart_obj.get("product") or {}
+                prod_name    = product.get("goods_name") or prod_name
+                prod_image   = product.get("goods_thumb") or product.get("goods_img") or ""
+                prod_price   = parse_amount(product.get("salePrice") or {})
+                prod_display = fmt_amount(product.get("salePrice"), symbol)
+                if cart_id:
+                    try:
+                        api_delete_cart_items([cart_id], country)
+                    except Exception:
+                        _enqueue_cleanup([cart_id], country)
+        except Exception:
+            pass
 
-            if sku_code:
-                variants = [{
-                    "sku_code": sku_code, "color": color,
-                    "color_img": "", "size": size,
-                    "stock": int(product.get("stock") or 0),
-                    "in_stock": bool(product.get("is_stock_enough") == "1"),
-                    "price": prod_price, "price_display": prod_display,
-                }]
+    # ── Build variants from what we got (either from main detail or ATC)
+    if sku_entries:
+        # Use per-sku price if we have it, otherwise fall back to prod_price
+        for s in sku_entries:
+            variants.append({
+                "sku_code":    s["sku_code"],
+                "color":       s.get("color", ""),
+                "color_img":   "",
+                "size":        s.get("size", ""),
+                "stock":       s.get("stock", 0),
+                "in_stock":    s.get("in_stock", False),
+                "price":       prod_price,
+                "price_display": prod_display,
+            })
 
-            if cart_id:
-                try:
-                    api_delete_cart_items([cart_id], country)
-                except Exception:
-                    _enqueue_cleanup([cart_id], country)
-
-    except Exception:
-        pass
-
-    # Return partial info — no coupon data available
     has_sizes  = any(v.get("size")  for v in variants)
     has_colors = len(set(v.get("color") for v in variants if v.get("color"))) > 1
-    default_sku = variants[0]["sku_code"] if variants else ""
+    unique_sizes  = list(dict.fromkeys(v["size"] for v in variants if v.get("size")))
+    unique_colors = list(dict.fromkeys(v["color"] for v in variants if v.get("color")))
+    default_sku   = first_sku
 
     return jsonify({
-        "goods_id":      goods_id,
-        "name":          prod_name,
-        "image":         prod_image,
-        "country":       country,
-        "currency":      currency,
-        "symbol":        symbol,
-        "sale_price":    prod_price,
-        "sale_display":  prod_display,
-        "stock":         variants[0]["stock"] if variants else "?",
-        "is_on_sale":    False,
-        "free_shipping": False,
-        "shipping_time": "",
-        "coupons":       [],
-        "coupons_unavailable": True,   # flag for frontend to show notice
-        "variants":      variants,
-        "has_colors":    has_colors,
-        "has_sizes":     has_sizes,
-        "unique_colors": [],
-        "unique_sizes":  [v["size"] for v in variants if v.get("size")],
-        "default_sku":   default_sku,
+        "goods_id":           goods_id,
+        "name":               prod_name,
+        "image":              prod_image,
+        "country":            country,
+        "currency":           currency,
+        "symbol":             symbol,
+        "sale_price":         prod_price,
+        "sale_display":       prod_display,
+        "stock":              variants[0]["stock"] if variants else "?",
+        "is_on_sale":         False,
+        "free_shipping":      False,
+        "shipping_time":      "",
+        "coupons":            [],
+        "coupons_unavailable": True,
+        "variants":           variants,
+        "has_colors":         has_colors,
+        "has_sizes":          has_sizes,
+        "unique_colors":      [{"name": c, "img": ""} for c in unique_colors],
+        "unique_sizes":       unique_sizes,
+        "default_sku":        default_sku,
     })
 
 
