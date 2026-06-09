@@ -137,6 +137,36 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;background:
 .cc-inelig{font-size:11px;color:var(--brand-price);display:flex;align-items:center;gap:4px}
 .cc-ship{font-size:12px;color:var(--brand-success);display:flex;align-items:center;gap:5px;font-weight:600}
 
+/* ── Voucher Selection ── */
+.voucher-selector{display:flex;flex-direction:column;gap:10px}
+.coupon-card.selectable{cursor:pointer;transition:border-color .2s,box-shadow .2s}
+.coupon-card.selectable:hover:not(.ineligible){border-color:var(--brand-black);box-shadow:var(--shadow-sm)}
+.coupon-card.active-voucher{border-color:var(--brand-black)!important;box-shadow:0 0 0 2px var(--brand-black)!important}
+.coupon-card.active-voucher .cc-check{display:flex!important}
+.cc-check{display:none;width:20px;height:20px;border-radius:50%;background:var(--brand-black);align-items:center;justify-content:center;flex-shrink:0}
+.no-voucher-opt{border:1px dashed var(--border-dark);border-radius:var(--r-md);padding:12px 16px;font-size:13px;color:var(--text-muted);cursor:pointer;display:flex;align-items:center;gap:8px;transition:.2s}
+.no-voucher-opt:hover{border-color:var(--brand-black);color:var(--text-main)}
+.no-voucher-opt.active-voucher{border-color:var(--brand-black);color:var(--text-main);font-weight:600}
+/* ── Points Toggle ── */
+.points-row{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:var(--bg);border-radius:var(--r-md);border:1px solid var(--border);margin-bottom:14px}
+.points-info{display:flex;flex-direction:column;gap:2px}
+.points-name{font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px}
+.points-sub{font-size:11px;color:var(--text-muted)}
+.toggle-switch{position:relative;width:44px;height:24px;flex-shrink:0}
+.toggle-switch input{opacity:0;width:0;height:0}
+.toggle-track{position:absolute;inset:0;background:var(--border-dark);border-radius:24px;cursor:pointer;transition:.2s}
+.toggle-track::before{content:'';position:absolute;width:18px;height:18px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+input:checked + .toggle-track{background:var(--brand-black)}
+input:checked + .toggle-track::before{transform:translateX(20px)}
+/* ── Live Total Bar ── */
+.live-total{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:16px;margin-bottom:12px;box-shadow:var(--shadow-sm)}
+.lt-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin-bottom:4px}
+.lt-price{font-size:28px;font-weight:800;color:var(--brand-price);letter-spacing:-.5px}
+.lt-breakdown{font-size:12px;color:var(--text-muted);margin-top:6px;display:flex;flex-direction:column;gap:3px}
+.lt-row{display:flex;justify-content:space-between}
+.lt-row.saving{color:var(--brand-success);font-weight:600}
+/* ── Cleanup Notice ── */
+.cleanup-notice{background:rgba(245,166,35,.07);border:1px solid rgba(245,166,35,.3);border-radius:var(--r-md);padding:10px 12px;font-size:11px;color:var(--brand-warn);display:flex;align-items:flex-start;gap:7px;margin-bottom:12px}
 /* ── Result Items ── */
 .result-items{display:flex;flex-direction:column;gap:10px}
 .ri-row{display:flex;align-items:center;gap:10px}
@@ -178,9 +208,9 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;background:
     </div>
   </header>
 
-  <!-- Add to Bag Section -->
+  <!-- Add to Cart Section -->
   <section class="section">
-    <div class="section-title">Add to Bag</div>
+    <div class="section-title">Add to Cart</div>
     <div class="search-box">
       <select class="country-select" id="country-sel">
         <option value="PH">PH</option>
@@ -397,11 +427,32 @@ function findSku(data, color, size){
   });
 }
 
+function getCurrentPrice(){
+  if(!_lookupData) return {price: _lookupData?.sale_price||0, display: _lookupData?.sale_display||''};
+  const sku = findSku(_lookupData, _selColor, _selSize);
+  if(sku && sku.price) return {price: sku.price, display: sku.price_display || `${_lookupData.symbol||'₱'}${sku.price.toFixed(2)}`};
+  return {price: _lookupData.sale_price, display: _lookupData.sale_display};
+}
+
 function renderPicker(){
   const data = _lookupData;
   if(!data) return;
   const prev = $('item-preview');
   const sym  = data.symbol || '₱';
+  const {price: curPrice, display: curDisplay} = getCurrentPrice();
+
+  // Product image + name header
+  const hasImage = data.image && data.image.length > 0;
+  const productHeader = `
+    <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:14px">
+      ${hasImage
+        ? `<img src="${esc(data.image)}" style="width:72px;height:96px;object-fit:cover;border-radius:var(--r-sm);flex-shrink:0;background:var(--border)" onerror="this.style.display='none'">`
+        : `<div style="width:72px;height:96px;border-radius:var(--r-sm);background:var(--border);flex-shrink:0;display:flex;align-items:center;justify-content:center"><i data-lucide="image" style="width:24px;height:24px;opacity:.3"></i></div>`}
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:600;line-height:1.4;color:var(--text-main);margin-bottom:6px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical">${esc(data.name)}</div>
+        <div style="font-size:10px;color:var(--text-light);font-family:'JetBrains Mono',monospace">#${esc(data.goods_id)}</div>
+      </div>
+    </div>`;
 
   // Tags
   const tags = [];
@@ -411,10 +462,9 @@ function renderPicker(){
     tags.push(`<span class="badge badge-black">${data.coupons.length} Voucher${data.coupons.length>1?'s':''}</span>`);
 
   const infoRow = `
-    <div class="price-row">
-      <span class="price-main">${esc(data.sale_display)}</span>
+    <div class="price-row" id="picker-price-row">
+      <span class="price-main" id="picker-price">${esc(curDisplay)}</span>
       ${tags.join('')}
-      <span class="goods-id">#${esc(data.goods_id)}</span>
     </div>`;
 
   // Color picker
@@ -455,26 +505,27 @@ function renderPicker(){
   const needSz  = data.has_sizes  && !_selSize;
   const canAdd  = !needCol && !needSz && (!curSku || curSku.in_stock);
 
-  let btnLabel = 'Add to Bag';
-  if(needCol)            btnLabel = 'Select Color';
-  else if(needSz)        btnLabel = 'Select Size';
-  else if(curSku && !curSku.in_stock) btnLabel = 'Out of Stock';
-
   // Stock note
   let stockNote = '';
   if(curSku && curSku.in_stock && typeof curSku.stock === 'number' && curSku.stock < 10){
     stockNote = `<div class="stock-note stock-warn"><i data-lucide="alert-circle" style="width:13px;height:13px"></i> Only ${curSku.stock} left</div>`;
   }
 
+  let btnLabel = 'Add to Cart';
+  if(needCol)            btnLabel = 'Select Color';
+  else if(needSz)        btnLabel = 'Select Size';
+  else if(curSku && !curSku.in_stock) btnLabel = 'Out of Stock';
+
   prev.style.display = 'block';
   prev.innerHTML = `
     <div class="preview-card">
+      ${productHeader}
       ${infoRow}
       ${colorSection}
       ${sizeSection}
       ${stockNote}
       <button class="btn btn-black btn-full" id="add-bag-btn" ${canAdd ? '' : 'disabled'}>
-        <i data-lucide="shopping-bag" style="width:15px;height:15px"></i> ${btnLabel}
+        <i data-lucide="shopping-cart" style="width:15px;height:15px"></i> ${btnLabel}
       </button>
       <button class="btn btn-outline btn-full" id="dismiss-picker-btn" style="margin-top:6px">Cancel</button>
     </div>`;
@@ -501,14 +552,15 @@ function renderPicker(){
   const addBtn = $('add-bag-btn');
   if(addBtn && canAdd){
     addBtn.addEventListener('click', () => {
-      const sku    = findSku(_lookupData, _selColor, _selSize);
-      const skuCode = sku ? sku.sku_code : (_lookupData.default_sku || '');
+      const sku      = findSku(_lookupData, _selColor, _selSize);
+      const skuCode  = sku ? sku.sku_code : (_lookupData.default_sku || '');
+      const {price}  = getCurrentPrice();
       addToCart({
         goods_id: _lookupData.goods_id,
         sku_code: skuCode,
-        name:     `Product #${_lookupData.goods_id}`,
-        price:    _lookupData.sale_price,
-        image:    '',
+        name:     _lookupData.name || `Product #${_lookupData.goods_id}`,
+        price,
+        image:    _lookupData.image || '',
         color:    _selColor || '',
         size:     _selSize  || '',
         symbol:   _lookupData.symbol || '₱',
@@ -552,74 +604,136 @@ async function doCheckout(){
   }
 }
 
+// ── Results state (for interactive voucher/points selection) ──
+let _resultsData     = null;
+let _selectedCoupon  = null;   // null = no voucher, or coupon object
+let _usePoints       = false;
+
+function calcFinalTotal(){
+  if(!_resultsData) return 0;
+  const sym = _resultsData.symbol || '₱';
+  let total = _resultsData.grand_total;
+  if(_selectedCoupon && _selectedCoupon.eligible && _selectedCoupon.discount > 0)
+    total = _selectedCoupon.final_total;
+  if(_usePoints && _resultsData.points.has_points)
+    total = Math.max(0, total - _resultsData.points.max_discount);
+  return Math.max(0, total);
+}
+
+function updateLiveTotal(){
+  if(!_resultsData) return;
+  const sym   = _resultsData.symbol || '₱';
+  const total = calcFinalTotal();
+  const el    = $('live-total-price');
+  if(el) el.textContent = `${sym}${total.toFixed(2)}`;
+
+  const breakdown = $('live-breakdown');
+  if(breakdown){
+    const rows = [];
+    rows.push(`<div class="lt-row"><span>Base price</span><span>${sym}${_resultsData.subtotal.toFixed(2)}</span></div>`);
+    const ship = _resultsData.shipping;
+    rows.push(`<div class="lt-row"><span>Shipping</span><span class="${ship.free?'val-free':''}">${ship.free?'FREE':`${sym}${ship.cost.toFixed(2)}`}</span></div>`);
+    if(_selectedCoupon && _selectedCoupon.eligible && _selectedCoupon.discount > 0)
+      rows.push(`<div class="lt-row saving"><span>Voucher (${esc(_selectedCoupon.discount_str)})</span><span>-${sym}${_selectedCoupon.discount.toFixed(2)}</span></div>`);
+    if(_usePoints && _resultsData.points.has_points)
+      rows.push(`<div class="lt-row saving"><span>SHEIN Points</span><span>-${sym}${_resultsData.points.max_discount.toFixed(2)}</span></div>`);
+    breakdown.innerHTML = rows.join('');
+  }
+
+  // Update voucher card highlights
+  document.querySelectorAll('.coupon-card.selectable').forEach(card => {
+    const isActive = _selectedCoupon && card.dataset.couponCode === _selectedCoupon.code;
+    card.classList.toggle('active-voucher', isActive);
+  });
+  const noVoucher = $('no-voucher-opt');
+  if(noVoucher) noVoucher.classList.toggle('active-voucher', !_selectedCoupon);
+}
+
 function renderResults(data){
+  _resultsData    = data;
+  _selectedCoupon = data.best_coupon || null;
+  _usePoints      = false;
   const sym = data.symbol || '₱';
   const R   = $('results');
-  const bestFinal = data.best_coupon ? data.best_coupon.final_total : data.grand_total;
 
-  // Items
+  // ── Cleanup notice
+  const cleanupNotice = `
+    <div class="cleanup-notice">
+      <i data-lucide="clock" style="width:14px;height:14px;flex-shrink:0;margin-top:1px"></i>
+      <span><b>Auto-cleanup:</b> Cart items added for this check will be automatically deleted after 30 minutes. Each check uses a unique session — your previous cart items are not affected.</span>
+    </div>`;
+
+  // ── Items
   const itemsHtml = `
     <section class="section">
       <div class="section-title">
         <span>Order Items</span>
-        <button class="btn btn-outline btn-sm" onclick="backToCart()">
-          <i data-lucide="shopping-bag" style="width:13px;height:13px"></i> Edit Bag
+        <button class="btn btn-outline btn-sm" id="back-to-cart-btn">
+          <i data-lucide="shopping-cart" style="width:13px;height:13px"></i> Edit
         </button>
       </div>
+      ${cleanupNotice}
       <div class="result-items">
         ${data.items.map(i => `
           <div class="ri-row">
-            <img class="ri-img" src="${esc(i.image||'')}" onerror="this.style.background='var(--border)';this.src=''">
+            <img class="ri-img" src="${esc(i.image||'')}" onerror="this.style.background='var(--border)';this.src=''" alt="">
             <div class="ri-info">
               <div class="ri-name">${esc(i.name)}</div>
               <div class="ri-attr">${[i.color,i.size].filter(Boolean).map(esc).join(' / ')} &bull; #${esc(i.goods_id)}</div>
             </div>
-            <div class="ri-price">${sym}${(i.sale_price * i.qty).toFixed(2)}${i.qty>1?` <span style="color:var(--text-muted);font-size:11px">×${i.qty}</span>`:''}</div>
+            <div class="ri-price">${sym}${(i.sale_price*i.qty).toFixed(2)}${i.qty>1?`<span style="color:var(--text-muted);font-size:10px"> ×${i.qty}</span>`:''}</div>
           </div>`).join('')}
       </div>
     </section>`;
 
-  // Price Summary
-  const shippingVal = data.shipping.free
-    ? `<span class="val val-free">FREE</span>`
-    : `<span class="val">${sym}${data.shipping.cost.toFixed(2)}</span>`;
-  const shipNote = data.shipping.need_more_for_free > 0
-    ? `<div class="ship-note"><i data-lucide="info" style="width:13px;height:13px"></i> Add ${esc(data.shipping.need_more_display)} more for free shipping</div>` : '';
+  // ── SHEIN Points toggle
+  let pointsHtml = '';
+  if(data.points && data.points.has_points){
+    pointsHtml = `
+      <section class="section" style="padding-bottom:14px">
+        <div class="section-title-sm">SHEIN Points</div>
+        <div class="points-row">
+          <div class="points-info">
+            <div class="points-name">
+              <i data-lucide="coins" style="width:15px;height:15px;color:var(--brand-warn)"></i>
+              Apply ${esc(data.points.available.toLocaleString())} points
+            </div>
+            <div class="points-sub">Save up to ${esc(data.points.max_discount_display)} on this order</div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="points-toggle">
+            <span class="toggle-track"></span>
+          </label>
+        </div>
+      </section>`;
+  }
 
-  const summaryHtml = `
-    <section class="section">
-      <div class="section-title">Order Summary</div>
-      <div class="summary-row"><span>Subtotal (${data.items.reduce((s,i)=>s+i.qty,0)} items)</span><span class="val">${sym}${data.subtotal.toFixed(2)}</span></div>
-      <div class="summary-row"><span>Shipping Fee</span>${shippingVal}</div>
-      ${data.best_coupon ? `<div class="summary-row" style="color:var(--brand-success)"><span>Best Voucher Applied</span><span style="color:var(--brand-success);font-weight:600">-${sym}${data.best_coupon.discount.toFixed(2)}</span></div>` : ''}
-      <div class="summary-row bold"><span>Estimated Total</span><span class="val">${sym}${bestFinal.toFixed(2)}</span></div>
-      ${shipNote}
-    </section>`;
-
-  // Vouchers
+  // ── Voucher selection
   let voucherHtml = '';
   if(data.coupons && data.coupons.length > 0){
     const cards = data.coupons.map(c => {
       const isBest = data.best_coupon && c.code === data.best_coupon.code;
       const elig   = c.eligible;
+      const isActive = _selectedCoupon && c.code === _selectedCoupon.code;
 
       let priceHtml = '';
       if(c.type === 'free_shipping' && elig){
-        priceHtml = `<div class="cc-ship"><i data-lucide="truck" style="width:14px;height:14px"></i> Free shipping applies!</div>`;
+        priceHtml = `<div class="cc-ship"><i data-lucide="truck" style="width:14px;height:14px"></i> Free shipping with this voucher</div>`;
       } else if(elig && c.discount > 0){
         priceHtml = `
           <div class="cc-price-box">
             <span class="cc-old">${sym}${data.grand_total.toFixed(2)}</span>
             <i data-lucide="arrow-right" style="width:13px;height:13px;color:var(--text-light)"></i>
             <span class="cc-new">${sym}${c.final_total.toFixed(2)}</span>
-            <span class="cc-save">SAVE ${sym}${c.discount.toFixed(2)}</span>
+            <span class="cc-save">-${sym}${c.discount.toFixed(2)}</span>
           </div>`;
       }
 
       return `
-        <div class="coupon-card ${isBest?'best':''} ${elig?'':'ineligible'}">
+        <div class="coupon-card selectable ${isBest?'best':''} ${elig?'':'ineligible'} ${isActive?'active-voucher':''}"
+             data-coupon-code="${esc(c.code||'')}">
           <div class="cc-top">
-            <div>
+            <div style="flex:1">
               <div class="cc-name">
                 <i data-lucide="ticket" style="width:15px;height:15px"></i>
                 ${esc(c.coupon_type)}
@@ -628,20 +742,26 @@ function renderResults(data){
               </div>
               <div class="cc-desc">${esc(c.discount_str)} &bull; ${esc(c.threshold_str)}</div>
             </div>
+            <div class="cc-check"><i data-lucide="check" style="width:12px;height:12px;color:white;stroke-width:3"></i></div>
           </div>
           ${priceHtml}
           <div class="cc-foot">
             ${c.code ? `<div class="cc-code" data-code="${esc(c.code)}">${esc(c.code)}</div>` : '<div></div>'}
-            ${!elig && c.min_order > 0 ? `<div class="cc-inelig"><i data-lucide="alert-circle" style="width:13px;height:13px"></i> Need ${sym}${Math.max(0, c.min_order - data.grand_total).toFixed(2)} more</div>` : ''}
-            ${c.tip ? `<div style="font-size:11px;color:var(--text-muted)">${esc(c.tip)}</div>` : ''}
+            ${!elig && c.min_order > 0
+              ? `<div class="cc-inelig"><i data-lucide="alert-circle" style="width:13px;height:13px"></i> Need ${sym}${Math.max(0,c.min_order-data.grand_total).toFixed(2)} more</div>`
+              : ''}
           </div>
         </div>`;
     }).join('');
 
     voucherHtml = `
       <section class="section" style="background:transparent;padding:0 16px 16px">
-        <div class="section-title-sm" style="padding:0 0 12px">Available Vouchers (${data.coupon_count})</div>
-        ${cards}
+        <div class="section-title-sm" style="padding:0 0 12px">Select Voucher (${data.coupon_count})</div>
+        <div class="no-voucher-opt ${!_selectedCoupon?'active-voucher':''}" id="no-voucher-opt">
+          <i data-lucide="x-circle" style="width:15px;height:15px"></i> No Voucher
+        </div>
+        <div style="height:8px"></div>
+        <div class="voucher-selector">${cards}</div>
       </section>`;
   } else {
     voucherHtml = `
@@ -653,13 +773,60 @@ function renderResults(data){
       </section>`;
   }
 
-  R.style.display = 'block';
-  R.innerHTML = itemsHtml + summaryHtml + voucherHtml;
-  lucide.createIcons();
+  // ── Live total card
+  const totalHtml = `
+    <section class="section" style="position:sticky;top:60px;z-index:40">
+      <div class="lt-label">Estimated Total</div>
+      <div class="lt-price" id="live-total-price">${sym}${calcFinalTotal().toFixed(2)}</div>
+      <div class="lt-breakdown" id="live-breakdown"></div>
+      ${data.shipping.need_more_for_free > 0 ? `
+        <div class="ship-note" style="margin-top:10px">
+          <i data-lucide="truck" style="width:13px;height:13px"></i>
+          Add ${esc(data.shipping.need_more_display)} more for free shipping
+        </div>` : ''}
+    </section>`;
 
-  // Attach copy handlers
+  R.style.display = 'block';
+  R.innerHTML = itemsHtml + totalHtml + pointsHtml + voucherHtml;
+  lucide.createIcons();
+  updateLiveTotal();
+
+  // ── Event listeners
+  $('back-to-cart-btn').addEventListener('click', backToCart);
+
+  if(data.points && data.points.has_points){
+    $('points-toggle').addEventListener('change', e => {
+      _usePoints = e.target.checked;
+      updateLiveTotal();
+    });
+  }
+
+  // Voucher card click to select
+  R.querySelectorAll('.coupon-card.selectable').forEach(card => {
+    card.addEventListener('click', e => {
+      if(e.target.closest('.cc-code')) return; // don't trigger on code copy
+      const code = card.dataset.couponCode;
+      if(!code) return;
+      const coupon = data.coupons.find(c => c.code === code);
+      if(!coupon || !coupon.eligible) return;
+      _selectedCoupon = (_selectedCoupon && _selectedCoupon.code === code) ? null : coupon;
+      if(!_selectedCoupon && $('no-voucher-opt')) $('no-voucher-opt').classList.add('active-voucher');
+      updateLiveTotal();
+    });
+  });
+
+  const noVoucherBtn = $('no-voucher-opt');
+  if(noVoucherBtn){
+    noVoucherBtn.addEventListener('click', () => {
+      _selectedCoupon = null;
+      updateLiveTotal();
+    });
+  }
+
+  // Code copy
   R.querySelectorAll('.cc-code').forEach(el => {
-    el.addEventListener('click', () => {
+    el.addEventListener('click', e => {
+      e.stopPropagation();
       const code = el.dataset.code;
       navigator.clipboard.writeText(code)
         .then(() => toast(`Copied: ${code}`))
@@ -667,18 +834,16 @@ function renderResults(data){
     });
   });
 
-  // Hide sticky bar while viewing results
   $('sticky-bottom').classList.remove('visible');
-
-  // Smooth scroll to results
   setTimeout(() => R.scrollIntoView({behavior:'smooth', block:'start'}), 50);
 }
 
-window.backToCart = function(){
+function backToCart(){
   $('results').style.display = 'none';
+  _resultsData = null; _selectedCoupon = null; _usePoints = false;
   if(cart.length > 0) $('sticky-bottom').classList.add('visible');
   $('cart-section').scrollIntoView({behavior:'smooth', block:'start'});
-};
+}
 
 // ── Init ──────────────────────────────────────────────────────
 renderCart();
