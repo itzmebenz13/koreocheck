@@ -21,8 +21,13 @@ import urllib3
 from flask import Flask, request, jsonify, render_template
 
 import requests as rq
+from curl_cffi.requests import Session as CffiSession
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# TLS-fingerprinted session — impersonates Chrome on Android
+# This bypasses SHEIN's 836000 server-side TLS fingerprint detection
+_cffi_session = CffiSession(impersonate="chrome131_android")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # IN-MEMORY CREDENTIAL OVERRIDE
@@ -30,6 +35,45 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # Overrides the env var values so Railway redeploy is NOT needed.
 # ─────────────────────────────────────────────────────────────────────────────
 _live_creds = {}   # keys: GW_AUTH, ANTI_IN, CS_RANDOM, RULEIDS, ATC_GW_AUTH, ATC_ANTI_IN
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WEB (BROWSER) CREDENTIALS — for ph.shein.com/bff-api calls
+# Pasted via /admin/refresh "Browser Capture" section.
+# ─────────────────────────────────────────────────────────────────────────────
+_web_creds = {}    # keys: GW_AUTH, ANTI_IN, CS_RANDOM, ARMORTOKEN, SMDEVICEID, AD_FLAG, COOKIES, CSRF_TOKEN, OEST
+
+def _web_cred(key: str) -> str:
+    return _web_creds.get(key, "")
+
+def _parse_web_headers(raw: str) -> dict:
+    """Parse browser capture headers into web credential dict."""
+    found = {}
+    cookies = []
+    for line in raw.splitlines():
+        if ":" not in line:
+            continue
+        name, _, val = line.partition(":")
+        name = name.strip().lower()
+        val  = val.strip()
+        if name == "cookie" and val:
+            cookies.append(val)
+            continue
+        mapping = {
+            "x-gw-auth":    "GW_AUTH",
+            "anti-in":      "ANTI_IN",
+            "x-cs-random":  "CS_RANDOM",
+            "armortoken":   "ARMORTOKEN",
+            "smdeviceid":   "SMDEVICEID",
+            "x-ad-flag":    "AD_FLAG",
+            "x-csrf-token": "CSRF_TOKEN",
+            "x-oest":       "OEST",
+            "webversion":   "WEBVERSION",
+        }
+        if name in mapping and val:
+            found[mapping[name]] = val
+    if cookies:
+        found["COOKIES"] = "; ".join(cookies)
+    return found
 
 def _cred(key: str) -> str:
     """Return live override if set, else fall back to env var."""
@@ -140,6 +184,65 @@ API_HOST    = "https://api-service.shein.com"
 CURRENCY_MAP = {"PH": "PHP", "TH": "THB", "MY": "MYR", "SG": "SGD", "US": "USD"}
 SYMBOL_MAP   = {"PHP": "₱", "THB": "฿", "MYR": "RM", "SGD": "S$", "USD": "$"}
 
+# ─────────────────────────────────────────────────────────────────
+# STORED VOUCHERS  (fallback when realtime endpoint returns 836000)
+# Loaded from VOUCHERS env var (JSON) or updated via /admin/refresh.
+# These are sitewide coupons from the owner's account.
+# ─────────────────────────────────────────────────────────────────
+_stored_vouchers = []
+_voucher_lock    = threading.Lock()
+
+def _load_vouchers_from_env():
+    raw = os.environ.get("VOUCHERS", "")
+    if raw:
+        try:
+            return json.loads(raw)
+        except Exception:
+            pass
+    return []
+
+_stored_vouchers = _load_vouchers_from_env()
+
+def _get_stored_vouchers():
+    with _voucher_lock:
+        return list(_stored_vouchers)
+
+def _set_stored_vouchers(vouchers: list):
+    global _stored_vouchers
+    with _voucher_lock:
+        _stored_vouchers = list(vouchers)
+
+def _extract_vouchers_from_response(rinfo: dict) -> list:
+    """Extract coupon data from a realtime product detail response."""
+    vouchers = []
+    coupon_list = (rinfo.get("cmpCouponInfo") or {}).get("cmpCouponInfoList") or []
+    for c in coupon_list:
+        if c.get("isValid") != 1:
+            continue
+        for rule in (c.get("rules") or []):
+            disc_str  = rule.get("discount", "")
+            thresh    = rule.get("threshold", "No Min. Buy")
+            min_order = parse_threshold(thresh)
+            is_fs     = (c.get("businessExtension") or {}).get("productDetail", {}).get("isFreeShipping") == "1"
+            tip       = (c.get("businessExtension") or {}).get("productDetail", {}).get("newCouponShowTip", "")
+            vouchers.append({
+                "code":          c.get("coupon", ""),
+                "coupon_type":   (c.get("couponType") or {}).get("name", "Coupon"),
+                "discount_str":  disc_str,
+                "threshold_str": thresh,
+                "min_order":     min_order,
+                "is_free_ship":  is_fs,
+                "tip":           tip,
+            })
+    # Deduplicate by code
+    seen = set()
+    unique = []
+    for v in vouchers:
+        if v["code"] not in seen:
+            seen.add(v["code"])
+            unique.append(v)
+    return unique
+
 
 # ─────────────────────────────────────────────────────────────────
 # HELPERS
@@ -205,6 +308,100 @@ def headers(country: str = "PH", extra: dict = None) -> dict:
     if extra:
         h.update(extra)
     return h
+
+
+WEB_HOST_MAP = {
+    "PH": "https://ph.shein.com", "TH": "https://th.shein.com",
+    "MY": "https://my.shein.com", "SG": "https://sg.shein.com",
+    "US": "https://us.shein.com",
+}
+
+def web_headers(country: str = "PH") -> dict:
+    """Build browser-style headers for ph.shein.com/bff-api calls."""
+    tz = TIMEZONE_MAP.get(country.upper(), "Asia/Manila")
+    base = WEB_HOST_MAP.get(country.upper(), "https://ph.shein.com")
+    return {
+        "accept":              "application/json, text/plain, */*",
+        "user-agent":          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        "x-requested-with":    "XMLHttpRequest",
+        "x-time-zone":         tz,
+        "webversion":          _web_cred("WEBVERSION") or "14.8.6",
+        "smdeviceid":          _web_cred("SMDEVICEID"),
+        "armortoken":          _web_cred("ARMORTOKEN"),
+        "x-gw-auth":           _web_cred("GW_AUTH"),
+        "anti-in":             _web_cred("ANTI_IN"),
+        "x-cs-random":         _web_cred("CS_RANDOM"),
+        "x-ad-flag":           _web_cred("AD_FLAG"),
+        "x-csrf-token":        _web_cred("CSRF_TOKEN"),
+        "x-oest":              _web_cred("OEST"),
+        "cookie":              _web_cred("COOKIES"),
+        "sec-ch-ua":           '"Chromium";v="145", "Not:A-Brand";v="99"',
+        "sec-ch-ua-mobile":    "?0",
+        "sec-ch-ua-platform":  '"Linux"',
+        "sec-fetch-site":      "same-origin",
+        "sec-fetch-mode":      "cors",
+        "sec-fetch-dest":      "empty",
+        "referer":             f"{base}/",
+        "accept-encoding":     "gzip, deflate, br, zstd",
+        "accept-language":     "en,en-US;q=0.9",
+    }
+
+
+def _normalize_web_response(web_data: dict) -> dict:
+    """Convert web API response to app API format so existing parsing code works."""
+    info = web_data.get("info") or {}
+    pi   = info.get("productInfo") or {}
+    pri  = info.get("priceInfo") or {}
+    sa   = info.get("saleAttr") or {}
+    si   = info.get("shipInfo") or {}
+    ui   = info.get("userInfo") or {}
+
+    # Strip HTML tags from shipping time
+    ship_time = si.get("shipping_time_information") or ""
+    ship_time = re.sub(r"<[^>]+>", "", ship_time).strip()
+
+    normalized = {
+        "goods_id":                  pi.get("goods_id"),
+        "goods_sn":                  pi.get("goods_sn"),
+        "goods_name":                None,  # not in realtime response — comes from static
+        "is_on_sale":                pi.get("is_on_sale"),
+        "stock":                     pi.get("stock"),
+        "sale_price":                pri.get("salePrice") or {},
+        "retail_price":              pri.get("retailPrice") or {},
+        "isProductShippingFree":     si.get("isProductShippingFree"),
+        "shipping_time_information": ship_time,
+        "multiLevelSaleAttribute":   sa.get("multiLevelSaleAttribute") or {},
+        "cmpCouponInfo":             (info.get("completeCouponInfo") or {}).get("cmpCouponInfo") or {},
+        "userHasCouponTypes":        ui.get("userHasCouponTypes") or [],
+    }
+    return {"code": "0", "msg": "ok", "info": normalized}
+
+
+def api_product_detail_web(goods_id: str, country: str = "PH") -> dict:
+    """
+    Fetch realtime product data via browser web API.
+    Uses ph.shein.com/bff-api — no 836000 issue.
+    """
+    base = WEB_HOST_MAP.get(country.upper(), "https://ph.shein.com")
+    params = {
+        "_ver": "1.1.8", "_lang": "en",
+        "goods_id": goods_id, "mallCode": "1",
+        "isUserSelectedMallCode": "0", "isQueryIsPaidMember": "1",
+        "isQueryCanTrail": "1", "isHideEstimatePriceInfo": "0",
+        "specialSceneType": "0", "sceneFlag": "",
+        "priorityMallType": "1", "skcPriceType": "",
+        "sourceFrom": "goods_detail",
+    }
+    h = web_headers(country)
+    try:
+        resp = rq.get(f"{base}/bff-api/product/get_goods_detail_realtime_data",
+                      params=params, headers=h, timeout=15, verify=False)
+        data = resp.json()
+        if str(data.get("code")) == "0":
+            return _normalize_web_response(data)
+        return data
+    except Exception as e:
+        return {"code": "error", "msg": f"Web API failed: {str(e)}"}
 
 
 def extract_goods_id(raw: str) -> str | None:
@@ -379,9 +576,15 @@ def api_product_static(goods_id: str, country: str = "PH") -> dict:
 def api_product_detail(goods_id: str, country: str = "PH") -> dict:
     """
     Fetch REALTIME product data — coupons (cmpCouponInfo), live stock, promotions.
-    Uses get_goods_detail_realtime_data.
-    May return 836000 for some products — callers must handle gracefully.
+    Strategy: Web API first (no 836000), then app API fallback.
     """
+    # ── Try browser web API first (bypasses 836000 entirely)
+    if _web_creds:
+        result = api_product_detail_web(goods_id, country)
+        if str(result.get("code")) == "0":
+            return result
+
+    # ── Fallback to app API
     params = _product_detail_params(goods_id, country)
     try:
         resp = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
@@ -1234,6 +1437,13 @@ def debug():
             "live_creds_count": len(_live_creds),
             "live_creds_keys": sorted(_live_creds.keys()),
         },
+        "web_api": {
+            "enabled": bool(_web_creds),
+            "web_creds_count": len(_web_creds),
+            "web_creds_keys": sorted(_web_creds.keys()),
+            "armortoken_prefix": (_web_cred("ARMORTOKEN")[:20] + "...") if _web_cred("ARMORTOKEN") else "NOT SET",
+            "has_cookies": bool(_web_cred("COOKIES")),
+        },
         "env_check": {
             "TOKEN_set":    bool(TOKEN),
             "ARMOR_set":    bool(ARMOR_TOKEN),
@@ -1271,23 +1481,24 @@ def debug_product():
         report["steps"].append(s)
         return s
 
-    # ── Step 1: Product detail with full params
+    # ── Step 1: Product detail with curl_cffi (Android TLS fingerprint)
     try:
         params_full = _product_detail_params(goods_id, country)
-        resp1 = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
+        resp1 = _cffi_session.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
                        params=params_full, headers=headers(country),
                        timeout=15, verify=False)
         r1 = resp1.json()
         code1 = str(r1.get("code", "?"))
         info1 = r1.get("info") or {}
         if code1 == "0":
-            step("product_detail_full_params", "✅ OK", code=code1,
+            step("product_detail_curl_cffi", "✅ OK (TLS fingerprint bypass)", code=code1,
                  detail={
                      "sale_price": (info1.get("sale_price") or {}).get("amountWithSymbol"),
                      "stock": info1.get("stock"),
                      "sku_count": len((info1.get("multiLevelSaleAttribute") or {}).get("sku_list") or []),
                      "coupon_count": len(((info1.get("cmpCouponInfo") or {}).get("cmpCouponInfoList")) or []),
                      "timezone_used": params_full["timeZone"],
+                     "method": "curl_cffi chrome131_android",
                  })
         else:
             step("product_detail_full_params", "❌ FAILED", code=code1,
@@ -1468,14 +1679,26 @@ def admin_refresh():
         if "ANTI_IN" in parsed:
             _live_creds["ATC_ANTI_IN"] = parsed["ANTI_IN"]
 
+        # ── Parse browser capture (web API credentials)
+        web_raw = (request.form.get("web_raw") or "").strip()
+        web_updated = []
+        if web_raw:
+            web_parsed = _parse_web_headers(web_raw)
+            for k, v in web_parsed.items():
+                _web_creds[k] = v
+                web_updated.append(f"WEB_{k}")
+
+        all_updated = updated + web_updated
         html = f"""<!DOCTYPE html><html><head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>body{{font-family:monospace;background:#0a0c10;color:#00ff88;padding:24px;max-width:600px;margin:0 auto}}
 h2{{color:#00ff88}}ul{{margin:12px 0}}li{{margin:4px 0}}
-a{{color:#00e5ff;text-decoration:none}}a:hover{{text-decoration:underline}}</style></head><body>
+a{{color:#00e5ff;text-decoration:none}}a:hover{{text-decoration:underline}}
+.web{{color:#8be9fd}}</style></head><body>
 <h2>✅ Credentials Updated</h2>
-<p>Updated {len(updated)} field(s) in memory:</p>
-<ul>{"".join(f"<li>{k}</li>" for k in updated)}</ul>
+<p>Updated {len(all_updated)} field(s) in memory:</p>
+<ul>{"".join(f'<li>{k}</li>' for k in updated)}{"".join(f'<li class="web">{k}</li>' for k in web_updated)}</ul>
+{f'<p style="color:#8be9fd">🌐 Web API credentials loaded — product detail will use browser API (no 836000)</p>' if web_updated else ''}
 <p style="color:#ffcc00">⚡ Takes effect immediately — no redeploy needed.</p>
 <p><a href="/">← Back to Price Checker</a> &nbsp;|&nbsp; <a href="/debug/product">Test it now</a></p>
 </body></html>"""
@@ -1518,15 +1741,18 @@ a{{color:#4a5568;font-size:11px;display:block;margin-top:12px}}
 {'<label>Admin Secret</label><input type="text" name="secret" form="rf" placeholder="Enter secret..." autocomplete="off">' if secret else ''}
 <form id="rf" method="POST">
 <input type="hidden" name="secret" value="">
-<label>Paste Raw HTTP Request</label>
-<textarea name="raw" placeholder="GET /product/get_goods_detail_realtime_data?... HTTP/2&#10;host: api-service.shein.com&#10;armortoken: T2_4.2.3_...&#10;x-gw-auth: a=vhOvoN...&#10;anti-in: 2_4.2.3_...&#10;deviceid: shein_...&#10;..."></textarea>
+<label>APP CAPTURE (optional — for ATC/checkout)</label>
+<textarea name="raw" placeholder="GET /product/get_goods_detail_realtime_data?... HTTP/2&#10;host: api-service.shein.com&#10;armortoken: T2_4.2.3_...&#10;..." style="min-height:120px"></textarea>
+<div style="height:20px"></div>
+<label style="color:#8be9fd">🌐 BROWSER CAPTURE (for product detail — fixes 836000)</label>
+<textarea name="web_raw" placeholder="GET /bff-api/product/get_goods_detail_realtime_data?... HTTP/2&#10;host: ph.shein.com&#10;armortoken: T0_3.12.1_...&#10;x-gw-auth: a=xjqHR52...&#10;anti-in: 0_1.9.1_...&#10;cookie: AT=MDEwMDE...; memberId=...&#10;..." style="min-height:180px;border-color:#1a3040"></textarea>
 <div style="margin-top:16px;padding:14px;background:#0f1218;border:1px solid #1e2530;border-radius:8px">
-<span style="color:#00e5ff;font-size:12px">ADDRESS OVERRIDE (optional — for T2 account)</span><br>
+<span style="color:#00e5ff;font-size:12px">ADDRESS OVERRIDE (optional)</span><br>
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
-<input type="text" name="address_id" placeholder="Address ID (e.g. 409618517)" style="margin:0">
-<input type="text" name="city" placeholder="City (e.g. CALAUAG)" style="margin:0">
-<input type="text" name="postcode" placeholder="Postcode (e.g. 4000)" style="margin:0">
-<input type="text" name="state" placeholder="State (e.g. QUEZON)" style="margin:0">
+<input type="text" name="address_id" placeholder="Address ID" style="margin:0">
+<input type="text" name="city" placeholder="City" style="margin:0">
+<input type="text" name="postcode" placeholder="Postcode" style="margin:0">
+<input type="text" name="state" placeholder="State" style="margin:0">
 </div>
 </div>
 <button type="submit">⚡ Refresh Credentials</button>
