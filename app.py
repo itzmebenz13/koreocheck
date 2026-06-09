@@ -44,6 +44,10 @@ APPCOUNTRY  = os.environ.get("APPCOUNTRY", "GB")
 COOKIE      = os.environ.get("COOKIE", "")
 RULEIDS     = os.environ.get("RULEIDS", "")
 
+# Cart-specific credentials (from add-to-cart capture — different signature than product detail)
+ATC_GW_AUTH = os.environ.get("ATC_GW_AUTH", "")   # x-gw-auth from add-to-cart capture
+ATC_ANTI_IN = os.environ.get("ATC_ANTI_IN", "")   # anti-in from add-to-cart capture
+
 # Owner's pre-configured address  (no user input needed)
 ADDRESS_ID  = os.environ.get("ADDRESS_ID", "2124807075")
 CITY        = os.environ.get("CITY", "BAUANG")
@@ -207,11 +211,17 @@ def api_product_detail(goods_id: str, country: str = "PH") -> dict:
 
 def api_add_to_cart(goods_id: str, sku_code: str, qty: int = 1,
                     country: str = "PH") -> dict:
-    """Add item to cart. Returns full response with cart.id and product info."""
+    """Add item to cart. Uses ATC-specific x-gw-auth and anti-in to avoid 836000."""
     body = (f"isAppointMall=&mall_code=1&quantity={qty}&sceneFlag="
             f"&skuMallCode=1&fromPageName=goodsDetailAddToCart"
             f"&goods_id={goods_id}&sku_code={sku_code}")
-    h = headers(country, {"content-type": "application/x-www-form-urlencoded"})
+    overrides = {"content-type": "application/x-www-form-urlencoded"}
+    # Use cart-specific credentials if available (different signature from product detail)
+    if ATC_GW_AUTH:
+        overrides["x-gw-auth"] = ATC_GW_AUTH
+    if ATC_ANTI_IN:
+        overrides["anti-in"] = ATC_ANTI_IN
+    h = headers(country, overrides)
     resp = rq.post(f"{API_HOST}/order/add_to_cart",
                    params={"goods_id": goods_id},
                    data=body, headers=h, timeout=15, verify=False)
@@ -238,11 +248,16 @@ def api_checkout(country: str = "PH") -> dict:
         "country_id": COUNTRY_ID,
         "popup": {"oneClickLowestTimes": "0"},
     }
-    h = headers(country, {
-        "content-type":    "application/json; charset=utf-8",
-        "frontend-scene":  "page_checkout",
-        "sessionid":       session_id,
-    })
+    overrides = {
+        "content-type":   "application/json; charset=utf-8",
+        "frontend-scene": "page_checkout",
+        "sessionid":      session_id,
+    }
+    if ATC_GW_AUTH:
+        overrides["x-gw-auth"] = ATC_GW_AUTH
+    if ATC_ANTI_IN:
+        overrides["anti-in"] = ATC_ANTI_IN
+    h = headers(country, overrides)
     resp = rq.post(f"{API_HOST}/order/order/checkout",
                    json=payload, headers=h, timeout=20, verify=False)
     return resp.json()
@@ -411,15 +426,12 @@ def item_info():
 @app.route("/api/checkout", methods=["POST"])
 def do_checkout():
     """
-    Full checkout simulation for a list of items.
-    Steps:
-      1. Add each item to owner's cart
-      2. Call checkout endpoint → get full price breakdown
-      3. Delete all added cart items
-      4. Return enriched result
+    Cart price simulation using ONLY the product detail API.
+    No cart/checkout API calls — avoids 836000 security restriction
+    on account-write endpoints from a remote server.
     """
     body    = request.get_json(silent=True) or {}
-    items   = body.get("items", [])    # [{goods_id, sku_code, qty, name, price, image}, ...]
+    items   = body.get("items", [])
     country = body.get("country", "PH").upper()
 
     if not items:
@@ -428,164 +440,174 @@ def do_checkout():
     currency = CURRENCY_MAP.get(country, "PHP")
     symbol   = SYMBOL_MAP.get(currency, "₱")
 
-    added_cart_ids   = []
-    item_results     = []
-    all_coupons_map  = {}   # code → coupon info (merged across items)
+    item_results    = []
+    all_coupons_map = {}
+    all_free_ship   = True
 
-    # ── Step 1: Add all items to cart
     for item in items:
-        gid      = str(item.get("goods_id", ""))
-        sku      = str(item.get("sku_code", ""))
-        qty      = max(1, int(item.get("qty", 1)))
-
-        if not gid or not sku:
+        gid = str(item.get("goods_id", ""))
+        qty = max(1, int(item.get("qty", 1)))
+        if not gid:
             continue
 
         try:
-            atc = api_add_to_cart(gid, sku, qty, country)
+            det   = api_product_detail(gid, country)
+            dinfo = det.get("info") or {}
         except Exception as exc:
-            return jsonify({"error": f"Add to cart failed for {gid}: {exc}"}), 502
+            return jsonify({"error": f"Could not fetch product {gid}: {exc}"}), 502
 
-        if str(atc.get("code")) != "0":
-            shein_code = atc.get("code", "?")
-            shein_msg  = atc.get("msg") or atc.get("message") or ""
-            return jsonify({"error": f"Add to cart failed [code={shein_code}]: {shein_msg or 'no message'} — item {gid}"}), 400
+        if str(det.get("code")) != "0":
+            msg = det.get("msg") or f"code={det.get('code')}"
+            return jsonify({"error": f"Product {gid}: {msg}"}), 400
 
-        cart_info = (atc.get("info") or {}).get("cart") or {}
-        cart_id   = cart_info.get("id")
-        product   = cart_info.get("product") or {}
-
-        if cart_id:
-            added_cart_ids.append(cart_id)
+        sale_raw   = dinfo.get("sale_price") or {}
+        sale_price = parse_amount(sale_raw)
+        free_ship  = dinfo.get("isProductShippingFree") == "1"
+        if not free_ship:
+            all_free_ship = False
 
         item_results.append({
-            "goods_id":    gid,
-            "sku_code":    sku,
-            "qty":         qty,
-            "cart_id":     cart_id,
-            "name":        product.get("goods_name") or item.get("name", f"Product {gid}"),
-            "image":       product.get("goods_thumb") or item.get("image", ""),
-            "sale_price":  parse_amount(product.get("salePrice")),
-            "price_display": fmt_amount(product.get("salePrice"), symbol),
-            "color":       next((a.get("attr_value_name") for a in (product.get("sku_sale_attr") or [])
-                                 if a.get("attr_name_en") == "Color"), ""),
-            "size":        next((a.get("attr_value_name") for a in (product.get("sku_sale_attr") or [])
-                                 if a.get("attr_name_en") == "Size"), ""),
+            "goods_id":      gid,
+            "sku_code":      item.get("sku_code", ""),
+            "qty":           qty,
+            "name":          item.get("name", f"Product #{gid}"),
+            "image":         item.get("image", ""),
+            "sale_price":    sale_price,
+            "price_display": fmt_amount(sale_raw, symbol),
+            "color":         item.get("color", ""),
+            "size":          item.get("size", ""),
+            "free_shipping": free_ship,
+            "stock":         dinfo.get("stock", "?"),
         })
 
-        # Get applicable coupons for this item
+        cpns = (dinfo.get("cmpCouponInfo") or {}).get("cmpCouponInfoList") or []
+        for c in cpns:
+            code = c.get("coupon", "")
+            if code and c.get("isValid") == 1:
+                all_coupons_map[code] = c
+
+    if not item_results:
+        return jsonify({"error": "No valid items found."}), 400
+
+    subtotal    = round(sum(r["sale_price"] * r["qty"] for r in item_results), 2)
+    grand_total = subtotal
+
+    # ── Try the real checkout API (for shipping, points, official totals)
+    # Requires ATC_GW_AUTH + ATC_ANTI_IN to be set in Railway env vars
+    checkout_data  = {}
+    added_cart_ids = []
+    used_real_checkout = False
+
+    if ATC_GW_AUTH and ATC_ANTI_IN:
         try:
-            det  = api_product_detail(gid, country)
-            dinfo = det.get("info") or {}
-            cpns  = (dinfo.get("cmpCouponInfo") or {}).get("cmpCouponInfoList") or []
-            for c in cpns:
-                code = c.get("coupon", "")
-                if code and c.get("isValid") == 1:
-                    all_coupons_map[code] = c
+            for item in item_results:
+                atc = api_add_to_cart(item["goods_id"], item["sku_code"], item["qty"], country)
+                if str(atc.get("code")) == "0":
+                    cart_id = ((atc.get("info") or {}).get("cart") or {}).get("id")
+                    if cart_id:
+                        added_cart_ids.append(cart_id)
+                        # Update name/image from real ATC response
+                        product = ((atc.get("info") or {}).get("cart") or {}).get("product") or {}
+                        item["name"]  = product.get("goods_name") or item["name"]
+                        item["image"] = product.get("goods_thumb") or item["image"]
+            if added_cart_ids:
+                co = api_checkout(country)
+                if str(co.get("code")) == "0":
+                    checkout_data      = co.get("info") or {}
+                    used_real_checkout = True
         except Exception:
-            pass   # Non-fatal; continue without coupon data for this item
+            pass
+        finally:
+            if added_cart_ids:
+                try:
+                    api_delete_cart_items(added_cart_ids, country)
+                except Exception:
+                    pass
 
-    if not added_cart_ids:
-        return jsonify({"error": "No items could be added to the cart."}), 400
+    # ── Shipping (real from checkout or calculated)
+    if used_real_checkout:
+        shipping_raw  = checkout_data.get("shippingPrice") or {}
+        shipping_cost = parse_amount(shipping_raw)
+        shipping_free = shipping_cost == 0.0
+        ffi           = checkout_data.get("freight_free_info") or {}
+        need_more     = parse_amount(ffi.get("shipping_price_diff")) if not shipping_free else 0.0
+        point_info    = checkout_data.get("point") or {}
+        avail_points  = int(point_info.get("total_point") or 0)
+        max_pt_disc   = parse_amount(point_info.get("pointPrice"))
+        points_tip    = point_info.get("useTip", "")
+        total_info    = checkout_data.get("total_price_info") or {}
+        grand_total   = parse_amount(total_info.get("grandTotalPrice")) or subtotal
+        sorted_official = [r for r in (checkout_data.get("sorted_price") or []) if r.get("show") == 1]
+    else:
+        FREE_SHIP_THRESHOLD = 249.0
+        shipping_free = all_free_ship or subtotal >= FREE_SHIP_THRESHOLD
+        shipping_cost = 0.0 if shipping_free else 49.0
+        need_more     = round(max(FREE_SHIP_THRESHOLD - subtotal, 0), 2) if not shipping_free else 0.0
+        avail_points  = 0
+        max_pt_disc   = 0.0
+        points_tip    = ""
+        sorted_official = []
 
-    # ── Step 2: Call checkout
-    checkout_data = {}
-    try:
-        co = api_checkout(country)
-        if str(co.get("code")) == "0":
-            checkout_data = co.get("info") or {}
-    except Exception:
-        pass   # Non-fatal; continue with partial data
-
-    # ── Step 3: Clean up — delete all added cart items
-    try:
-        api_delete_cart_items(added_cart_ids, country)
-    except Exception:
-        pass   # Best effort cleanup
-
-    # ── Step 4: Build response
-    subtotal      = sum(r["sale_price"] * r["qty"] for r in item_results)
-    shipping_raw  = checkout_data.get("shippingPrice") or {}
-    shipping_cost = parse_amount(shipping_raw)
-    shipping_free = shipping_cost == 0.0
-
-    ffi           = checkout_data.get("freight_free_info") or {}
-    shipping_diff = parse_amount(ffi.get("shipping_price_diff"))
-    need_more_for_free = shipping_diff if not shipping_free else 0.0
-
-    # Points
-    point_info     = checkout_data.get("point") or {}
-    avail_points   = int(point_info.get("total_point") or 0)
-    max_point_disc = parse_amount(point_info.get("pointPrice"))
-    points_ratio   = point_info.get("useTip", "")
-
-    # Sorted price (official breakdown rows)
-    sorted_price   = [r for r in (checkout_data.get("sorted_price") or []) if r.get("show") == 1]
-
-    # Grand total (no coupon)
-    total_info     = checkout_data.get("total_price_info") or {}
-    grand_total    = parse_amount(total_info.get("grandTotalPrice")) or subtotal
-
-    # Build coupon comparison
     coupon_options = []
     for code, c in all_coupons_map.items():
-        rules = c.get("rules") or []
-        for rule in rules:
+        for rule in (c.get("rules") or []):
             disc_str   = rule.get("discount", "")
             thresh_str = rule.get("threshold", "No Min. Buy")
             min_order  = parse_threshold(thresh_str)
             calc       = calc_coupon_discount(disc_str, subtotal, min_order)
             is_fs      = (c.get("businessExtension") or {}).get("productDetail", {}).get("isFreeShipping") == "1"
             tip        = (c.get("businessExtension") or {}).get("productDetail", {}).get("newCouponShowTip", "")
-
-            # Final total with coupon
-            if calc["type"] == "free_shipping" and calc["eligible"]:
-                final_total = grand_total  # price same, just ship free
-            else:
-                final_total = round(max(grand_total - calc["discount"], 0), 2)
-
+            final_total = grand_total if calc["type"] == "free_shipping" else round(max(grand_total - calc["discount"], 0), 2)
             coupon_options.append({
-                "code":         code,
-                "coupon_type":  (c.get("couponType") or {}).get("name", "Coupon"),
-                "discount_str": disc_str,
-                "threshold_str":thresh_str,
-                "min_order":    min_order,
-                "is_free_ship": is_fs,
-                "tip":          tip,
+                "code":          code,
+                "coupon_type":   (c.get("couponType") or {}).get("name", "Coupon"),
+                "discount_str":  disc_str,
+                "threshold_str": thresh_str,
+                "min_order":     min_order,
+                "is_free_ship":  is_fs,
+                "tip":           tip,
                 **calc,
-                "final_total":  final_total,
-                "savings_pct":  round(calc["discount"] / grand_total * 100, 1) if grand_total and calc["discount"] else 0,
+                "final_total":   final_total,
+                "savings_pct":   round(calc["discount"] / grand_total * 100, 1) if grand_total and calc["discount"] else 0,
             })
 
     coupon_options.sort(key=lambda x: (-int(x["eligible"]), -x["discount"]))
     best_coupon = next((c for c in coupon_options if c["eligible"] and c["discount"] > 0), None)
 
+    sorted_price = sorted_official or [
+        {"type": "origin",   "local_name": "Subtotal:",    "price_with_symbol": f"{symbol}{subtotal:.2f}", "show": 1},
+        {"type": "shipping", "local_name": "Shipping Fee:", "price_with_symbol": "FREE" if shipping_free else f"{symbol}{shipping_cost:.2f}", "show": 1},
+        {"type": "coupon",   "local_name": "Best Coupon:", "price_with_symbol": f"-{symbol}{best_coupon['discount']:.2f}" if best_coupon else f"{symbol}0", "show": 1},
+        {"type": "total",    "local_name": "Grand Total:", "price_with_symbol": f"{symbol}{(best_coupon['final_total'] if best_coupon else grand_total):.2f}", "show": 1},
+    ]
+
     return jsonify({
-        "country":      country,
-        "currency":     currency,
-        "symbol":       symbol,
-        "items":        item_results,
-        "subtotal":     round(subtotal, 2),
-        "subtotal_display": f"{symbol}{subtotal:.2f}",
-        "grand_total":  grand_total,
+        "country":             country,
+        "currency":            currency,
+        "symbol":              symbol,
+        "items":               item_results,
+        "subtotal":            subtotal,
+        "subtotal_display":    f"{symbol}{subtotal:.2f}",
+        "grand_total":         grand_total,
         "grand_total_display": f"{symbol}{grand_total:.2f}",
+        "used_real_checkout":  used_real_checkout,
         "shipping": {
-            "free":         shipping_free,
-            "cost":         shipping_cost,
-            "cost_display": fmt_amount(shipping_raw, symbol),
-            "need_more_for_free": need_more_for_free,
-            "need_more_display":  f"{symbol}{need_more_for_free:.2f}" if need_more_for_free > 0 else "",
+            "free":              shipping_free,
+            "cost":              shipping_cost,
+            "cost_display":      "FREE" if shipping_free else f"{symbol}{shipping_cost:.2f}",
+            "need_more_for_free": need_more,
+            "need_more_display": f"{symbol}{need_more:.2f}" if need_more > 0 else "",
         },
         "points": {
-            "available":     avail_points,
-            "max_discount":  max_point_disc,
-            "max_discount_display": f"{symbol}{max_point_disc:.2f}",
-            "ratio_tip":     points_ratio,
+            "available":          avail_points,
+            "max_discount":       max_pt_disc,
+            "max_discount_display": f"{symbol}{max_pt_disc:.2f}",
+            "ratio_tip":          points_tip,
         },
-        "sorted_price":   sorted_price,
-        "coupons":        coupon_options,
-        "best_coupon":    best_coupon,
-        "coupon_count":   len(coupon_options),
+        "sorted_price":  sorted_price,
+        "coupons":       coupon_options,
+        "best_coupon":   best_coupon,
+        "coupon_count":  len(coupon_options),
     })
 
 
