@@ -209,42 +209,83 @@ def calc_coupon_discount(discount_str: str, price: float, min_order: float) -> d
 # SHEIN API CALLS
 # ─────────────────────────────────────────────────────────────────
 
-def api_product_detail(goods_id: str, country: str = "PH") -> dict:
-    """Fetch realtime product data (price + applicable coupons).
-    All params — including empty ones — must match the original app request exactly."""
-    params = {
-        "priorityMallType":          "1",
-        "sceneFromPage":             "",
+TIMEZONE_MAP = {
+    "PH": "Asia/Manila",
+    "TH": "Asia/Bangkok",
+    "MY": "Asia/Kuala_Lumpur",
+    "SG": "Asia/Singapore",
+    "US": "America/New_York",
+}
+
+COUNTRY_ID_MAP = {
+    "PH": "170", "TH": "219", "MY": "131", "SG": "185", "US": "226",
+}
+
+def _product_detail_params(goods_id: str, country: str = "PH") -> dict:
+    """Build the full set of query params for the product detail realtime endpoint."""
+    tz = TIMEZONE_MAP.get(country.upper(), "Asia/Manila")
+    return {
+        "priorityMallType":            "1",
+        "sceneFromPage":               "",
         "isRelatedColorNeedPromotion": "",
-        "promotionId":               "",
-        "isAppointMall":             "0",
-        "useSupplyGoods":            "",
-        "isUserSelectedMallCode":    "0",
-        "sceneFlag":                 "",
-        "mallCode":                  "1",
-        "localSiteQueryFlag":        "0",
-        "orderPrice":                "",
-        "isHideNotSatisfied":        "",
-        "isSizeGatherTag":           "",
-        "hasReportMember":           "0",
-        "sourceFrom":                "goods_detail",
-        "promotionLogoType":         "",
-        "promotionType":             "",
-        "isHidePromotionTip":        "",
-        "goods_id":                  goods_id,
-        "timeZone":                  "Asia/Manila",
-        "isHideEstimatePriceInfo":   "",
-        "popComponentEntry":         "",
-        "bundledPurchaseMainGoodsId": "",
-        "visitNumOfDay":             "1",
-        "isShowMall":                "0",
-        "isPaidMember":              "0",
-        "billno":                    "",
-        "promotionProductMark":      "",
+        "promotionId":                 "",
+        "isAppointMall":               "0",
+        "useSupplyGoods":              "",
+        "isUserSelectedMallCode":      "0",
+        "sceneFlag":                   "",
+        "mallCode":                    "1",
+        "localSiteQueryFlag":          "0",
+        "orderPrice":                  "",
+        "isHideNotSatisfied":          "",
+        "isSizeGatherTag":             "",
+        "hasReportMember":             "0",
+        "sourceFrom":                  "goods_detail",
+        "promotionLogoType":           "",
+        "promotionType":               "",
+        "isHidePromotionTip":          "",
+        "goods_id":                    goods_id,
+        "timeZone":                    tz,
+        "isHideEstimatePriceInfo":     "",
+        "popComponentEntry":           "",
+        "bundledPurchaseMainGoodsId":  "",
+        "visitNumOfDay":               "1",
+        "isShowMall":                  "0",
+        "isPaidMember":                "0",
+        "billno":                      "",
+        "promotionProductMark":        "",
     }
-    resp = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
-                  params=params, headers=headers(country), timeout=15, verify=False)
-    return resp.json()
+
+
+def api_product_detail(goods_id: str, country: str = "PH") -> dict:
+    """
+    Fetch realtime product data (price + applicable coupons).
+    All params — including empty ones — must match the original app request exactly.
+    If the first attempt returns 836000, retries once without optional params.
+    """
+    params = _product_detail_params(goods_id, country)
+    resp   = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
+                    params=params, headers=headers(country), timeout=15, verify=False)
+    result = resp.json()
+
+    # Retry once with minimal params if security validation failed
+    if str(result.get("code")) == "836000":
+        minimal = {
+            "goods_id":       goods_id,
+            "mallCode":       "1",
+            "sourceFrom":     "goods_detail",
+            "visitNumOfDay":  "1",
+            "isShowMall":     "0",
+            "isPaidMember":   "0",
+            "priorityMallType": "1",
+            "timeZone":       TIMEZONE_MAP.get(country.upper(), "Asia/Manila"),
+        }
+        resp2  = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
+                        params=minimal, headers=headers(country), timeout=15, verify=False)
+        result2 = resp2.json()
+        if str(result2.get("code")) == "0":
+            return result2
+
+    return result
 
 
 def api_add_to_cart(goods_id: str, sku_code: str, qty: int = 1,
@@ -312,9 +353,10 @@ def api_delete_cart_items(cart_ids: list, country: str = "PH") -> dict:
 
 def api_get_cart(country: str = "PH") -> dict:
     """Get current cart to identify existing checked items before our check."""
+    cid = COUNTRY_ID_MAP.get(country.upper(), COUNTRY_ID)
     h = headers(country, {"content-type": "application/json; charset=utf-8"})
     resp = rq.post(f"{API_HOST}/order/get_carts_info_for_order_confirm",
-                   json={"bag_show_style": "1", "country_id": "170",
+                   json={"bag_show_style": "1", "country_id": cid,
                          "userLocalSizeCountry": "", "postcode": POSTCODE},
                    headers=h, timeout=15, verify=False)
     return resp.json()
@@ -433,7 +475,9 @@ def item_info():
     if str(detail.get("code")) != "0":
         shein_code = detail.get("code", "?")
         shein_msg  = detail.get("msg") or detail.get("message") or ""
-        return jsonify({"error": shein_msg or f"SHEIN API error (code={shein_code}). Check /debug for details."}), 400
+        if str(shein_code) == "836000":
+            shein_msg = "Product not accessible. Try a different country (TH/MY/SG), or this product may be region-locked."
+        return jsonify({"error": shein_msg or f"SHEIN API error (code={shein_code})"}), 400
 
     info      = detail.get("info") or {}
     sale_raw  = info.get("sale_price") or {}
@@ -474,7 +518,18 @@ def item_info():
     prod_image = ""
     if ATC_GW_AUTH and ATC_ANTI_IN and variant_data.get("default_sku"):
         try:
-            atc = api_add_to_cart(goods_id, variant_data["default_sku"], 1, country)
+            # Short timeout (5s) — non-blocking; name/image are cosmetic
+            body = (f"isAppointMall=&mall_code=1&quantity=1&sceneFlag="
+                    f"&skuMallCode=1&fromPageName=goodsDetailAddToCart"
+                    f"&goods_id={goods_id}&sku_code={variant_data['default_sku']}")
+            overrides = {"content-type": "application/x-www-form-urlencoded"}
+            if ATC_GW_AUTH: overrides["x-gw-auth"] = ATC_GW_AUTH
+            if ATC_ANTI_IN: overrides["anti-in"]   = ATC_ANTI_IN
+            atc_resp = rq.post(f"{API_HOST}/order/add_to_cart",
+                               params={"goods_id": goods_id},
+                               data=body, headers=headers(country, overrides),
+                               timeout=5, verify=False)
+            atc = atc_resp.json()
             if str(atc.get("code")) == "0":
                 cart_obj = ((atc.get("info") or {}).get("cart") or {})
                 cart_id  = cart_obj.get("id")
@@ -482,7 +537,10 @@ def item_info():
                 prod_name  = product.get("goods_name") or prod_name
                 prod_image = product.get("goods_thumb") or product.get("goods_img") or ""
                 if cart_id:
-                    api_delete_cart_items([cart_id], country)
+                    try:
+                        api_delete_cart_items([cart_id], country)
+                    except Exception:
+                        _enqueue_cleanup([cart_id], country)
         except Exception:
             pass   # Non-fatal — name/image stay as fallback
 
@@ -709,61 +767,166 @@ def health():
 
 @app.route("/debug")
 def debug():
-    """
-    Test endpoint — calls SHEIN product API with goods_id=470311441
-    and returns the RAW response so you can diagnose any auth/config issues.
-    Open this URL in your browser: /debug
-    """
-    country = request.args.get("country", "PH")
-    goods_id = request.args.get("goods_id", "470311441")
-    try:
-        result = api_product_detail(goods_id, country)
-        code   = str(result.get("code", "?"))
-        msg    = result.get("msg", "")
-        info   = result.get("info") or {}
+    """Quick credential check — open /debug in browser."""
+    ok = bool(TOKEN and ARMOR_TOKEN and GW_AUTH and ADDRESS_ID)
+    atc_ok = bool(ATC_GW_AUTH and ATC_ANTI_IN)
+    return jsonify({
+        "status": "ok",
+        "credentials_set": ok,
+        "atc_credentials_set": atc_ok,
+        "address_id": ADDRESS_ID,
+        "usage": {
+            "product_debug": "/debug/product?goods_id=470311441&country=PH",
+            "product_debug_th": "/debug/product?goods_id=YOUR_ID&country=TH",
+        },
+        "env_check": {
+            "TOKEN_set":    bool(TOKEN),
+            "ARMOR_set":    bool(ARMOR_TOKEN),
+            "GW_AUTH_set":  bool(GW_AUTH),
+            "SMDEVICE_set": bool(SMDEVICE_ID),
+            "COOKIE_set":   bool(COOKIE),
+            "ATC_GW_set":   bool(ATC_GW_AUTH),
+            "ATC_ANTI_set": bool(ATC_ANTI_IN),
+            "TOKEN_last12": TOKEN[-12:] if TOKEN else "MISSING",
+            "DEVICE_ID":    DEVICE_ID[:36] if DEVICE_ID else "MISSING",
+        },
+        "cleanup_queue_size": len(_cleanup_queue),
+    })
 
-        # Get first available sku_code for add-to-cart test
-        mls      = info.get("multiLevelSaleAttribute") or {}
+
+@app.route("/debug/product")
+def debug_product():
+    """
+    Comprehensive product debug endpoint.
+    Tests every API call in sequence and reports exactly what fails and why.
+
+    Usage:
+      /debug/product?goods_id=470311441&country=PH
+      /debug/product?goods_id=YOUR_ID&country=TH
+    """
+    country  = request.args.get("country", "PH").upper()
+    goods_id = request.args.get("goods_id", "470311441").strip()
+    report   = {"goods_id": goods_id, "country": country, "steps": [], "diagnosis": []}
+
+    def step(name, status, code=None, msg=None, detail=None):
+        s = {"step": name, "status": status}
+        if code  is not None: s["shein_code"] = str(code)
+        if msg:               s["shein_msg"]  = msg
+        if detail:            s["detail"]     = detail
+        report["steps"].append(s)
+        return s
+
+    # ── Step 1: Product detail with full params
+    try:
+        params_full = _product_detail_params(goods_id, country)
+        resp1 = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
+                       params=params_full, headers=headers(country),
+                       timeout=15, verify=False)
+        r1 = resp1.json()
+        code1 = str(r1.get("code", "?"))
+        info1 = r1.get("info") or {}
+        if code1 == "0":
+            step("product_detail_full_params", "✅ OK", code=code1,
+                 detail={
+                     "sale_price": (info1.get("sale_price") or {}).get("amountWithSymbol"),
+                     "stock": info1.get("stock"),
+                     "sku_count": len((info1.get("multiLevelSaleAttribute") or {}).get("sku_list") or []),
+                     "coupon_count": len(((info1.get("cmpCouponInfo") or {}).get("cmpCouponInfoList")) or []),
+                     "timezone_used": params_full["timeZone"],
+                 })
+        else:
+            step("product_detail_full_params", "❌ FAILED", code=code1,
+                 msg=r1.get("msg") or "",
+                 detail={"timezone_used": params_full["timeZone"],
+                         "hint": "836000 = security/param mismatch, try different country"})
+    except Exception as exc:
+        step("product_detail_full_params", "💥 EXCEPTION", msg=str(exc))
+        r1 = {}; code1 = "exc"; info1 = {}
+
+    # ── Step 2: Product detail with minimal params (fallback)
+    if code1 != "0":
+        try:
+            params_min = {
+                "goods_id": goods_id, "mallCode": "1",
+                "sourceFrom": "goods_detail", "visitNumOfDay": "1",
+                "isShowMall": "0", "isPaidMember": "0",
+                "priorityMallType": "1",
+                "timeZone": TIMEZONE_MAP.get(country, "Asia/Manila"),
+            }
+            resp2 = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
+                           params=params_min, headers=headers(country),
+                           timeout=15, verify=False)
+            r2 = resp2.json()
+            code2 = str(r2.get("code", "?"))
+            if code2 == "0":
+                step("product_detail_minimal_params", "✅ OK (fallback worked)", code=code2)
+                info1 = r2.get("info") or {}
+            else:
+                step("product_detail_minimal_params", "❌ FAILED", code=code2,
+                     msg=r2.get("msg") or "",
+                     detail={"hint": "Both param sets failed. Likely product is region-locked or SHEIN changed validation."})
+        except Exception as exc:
+            step("product_detail_minimal_params", "💥 EXCEPTION", msg=str(exc))
+
+    # ── Step 3: Add-to-cart test (requires ATC creds)
+    test_sku = ""
+    if info1:
+        mls = info1.get("multiLevelSaleAttribute") or {}
         sku_list = mls.get("sku_list") or []
         test_sku = sku_list[0].get("sku_code") if sku_list else ""
 
-        # Test add-to-cart if sku available
-        atc_result = {}
-        if test_sku:
-            try:
-                atc = api_add_to_cart(goods_id, test_sku, 1, country)
-                atc_code = str(atc.get("code", "?"))
-                atc_msg  = atc.get("msg") or ""
-                cart_id  = (atc.get("info") or {}).get("cart", {}).get("id")
-                atc_result = {"code": atc_code, "msg": atc_msg, "cart_id": cart_id}
-                # Clean up immediately
+    if not ATC_GW_AUTH or not ATC_ANTI_IN:
+        step("add_to_cart", "⚠ SKIPPED", detail={"reason": "ATC_GW_AUTH or ATC_ANTI_IN not set in Railway env vars"})
+    elif not test_sku:
+        step("add_to_cart", "⚠ SKIPPED", detail={"reason": "No SKU found — product detail must succeed first"})
+    else:
+        try:
+            atc = api_add_to_cart(goods_id, test_sku, 1, country)
+            atc_code = str(atc.get("code", "?"))
+            cart_obj = ((atc.get("info") or {}).get("cart") or {})
+            cart_id  = cart_obj.get("id")
+            prod     = cart_obj.get("product") or {}
+            if atc_code == "0":
+                step("add_to_cart", "✅ OK", code=atc_code, detail={
+                    "cart_id": cart_id,
+                    "product_name": prod.get("goods_name", "")[:80],
+                    "sku_used": test_sku,
+                })
                 if cart_id:
-                    api_delete_cart_items([cart_id], country)
-            except Exception as e:
-                atc_result = {"error": str(e)}
+                    try:
+                        api_delete_cart_items([cart_id], country)
+                        step("cart_cleanup", "✅ OK", detail={"cart_id": cart_id})
+                    except Exception as exc:
+                        step("cart_cleanup", "⚠ FAILED", msg=str(exc),
+                             detail={"cart_id": cart_id, "note": "30-min auto-cleanup will handle this"})
+                        _enqueue_cleanup([cart_id], country)
+            else:
+                step("add_to_cart", "❌ FAILED", code=atc_code,
+                     msg=atc.get("msg") or "",
+                     detail={"sku_used": test_sku,
+                             "hint": "836000 = ATC creds may need refreshing (re-capture add-to-cart request)"})
+        except Exception as exc:
+            step("add_to_cart", "💥 EXCEPTION", msg=str(exc))
 
-        return jsonify({
-            "shein_code":        code,
-            "shein_msg":         msg,
-            "goods_id_returned": info.get("goods_id"),
-            "sale_price":        (info.get("sale_price") or {}).get("amountWithSymbol"),
-            "stock":             info.get("stock"),
-            "sku_count":         len(sku_list),
-            "test_sku":          test_sku,
-            "add_to_cart_test":  atc_result,
-            "coupon_count":      len(((info.get("cmpCouponInfo") or {}).get("cmpCouponInfoList")) or []),
-            "env_check": {
-                "TOKEN_set":       bool(TOKEN),
-                "ARMOR_set":       bool(ARMOR_TOKEN),
-                "GW_AUTH_set":     bool(GW_AUTH),
-                "SMDEVICE_set":    bool(SMDEVICE_ID),
-                "COOKIE_set":      bool(COOKIE),
-                "TOKEN_preview":   TOKEN[-12:] if TOKEN else "MISSING",
-                "DEVICE_ID":       DEVICE_ID[:30] + "..." if len(DEVICE_ID) > 30 else DEVICE_ID,
-            },
-        })
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+    # ── Diagnosis summary
+    statuses = [s["status"] for s in report["steps"]]
+    if all("✅" in s for s in statuses):
+        report["diagnosis"].append("✅ All systems working for this product.")
+    else:
+        for s in report["steps"]:
+            if "❌" in s["status"] or "💥" in s["status"]:
+                code = s.get("shein_code", "")
+                if code == "836000":
+                    report["diagnosis"].append(
+                        f"❌ {s['step']}: 836000 — "
+                        + ("Try a different country. " if "product_detail" in s["step"] else "Refresh ATC_GW_AUTH and ATC_ANTI_IN from a new add-to-cart capture.")
+                    )
+                elif "💥" in s["status"]:
+                    report["diagnosis"].append(f"💥 {s['step']}: Exception — {s.get('shein_msg','')}")
+                else:
+                    report["diagnosis"].append(f"❌ {s['step']}: code={code} — {s.get('shein_msg','')}")
+
+    return jsonify(report)
 
 
 if __name__ == "__main__":
