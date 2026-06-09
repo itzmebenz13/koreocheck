@@ -582,13 +582,19 @@ def _get_sku_via_main_detail(goods_id: str, country: str) -> list:
     Returns list of {sku_code, color, size, stock, in_stock}.
     """
     tz = TIMEZONE_MAP.get(country.upper(), "Asia/Manila")
+    # Static endpoint is the best fallback — confirmed to return full sku_list
+    static_params = {
+        "priorityMallType": "1", "goods_id": goods_id,
+        "mallCode": "1", "isUserSelectedMallCode": "0",
+        "isAppointMall": "0", "isShowMall": "0",
+        "sourceFrom": "goods_detail", "isPaidMember": "0",
+    }
     attempts = [
-        # App API main detail endpoints
+        # ⭐ Static endpoint — has sku_list, confirmed working with valid creds
+        (f"{API_HOST}/product/get_goods_detail_static_data_v2", static_params),
+        # Other fallbacks
         (f"{API_HOST}/product/main/goods_detail_v4",
          {"goods_id": goods_id, "mallCode": "1", "sourceFrom": "goods_detail"}),
-        (f"{API_HOST}/product/main/goods_skc_sku_info",
-         {"goods_id": goods_id, "mallCode": "1"}),
-        # Without armortoken (stripped headers)
         (f"{API_HOST}/product/get_goods_detail_realtime_data",
          _product_detail_params(goods_id, country)),
     ]
