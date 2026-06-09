@@ -25,6 +25,41 @@ import requests as rq
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ─────────────────────────────────────────────────────────────────────────────
+# IN-MEMORY CREDENTIAL OVERRIDE
+# Updated via /admin/refresh — survives until server restarts.
+# Overrides the env var values so Railway redeploy is NOT needed.
+# ─────────────────────────────────────────────────────────────────────────────
+_live_creds = {}   # keys: GW_AUTH, ANTI_IN, CS_RANDOM, RULEIDS, ATC_GW_AUTH, ATC_ANTI_IN
+
+def _cred(key: str) -> str:
+    """Return live override if set, else fall back to env var."""
+    return _live_creds.get(key) or globals().get(key, "")
+
+def _parse_raw_headers(raw: str) -> dict:
+    """Extract headers from a raw HTTP request dump."""
+    found = {}
+    for line in raw.splitlines():
+        if ":" not in line:
+            continue
+        name, _, val = line.partition(":")
+        name = name.strip().lower()
+        val  = val.strip()
+        mapping = {
+            "x-gw-auth":   "GW_AUTH",
+            "anti-in":     "ANTI_IN",
+            "x-cs-random": "CS_RANDOM",
+            "ruleids":     "RULEIDS",
+            "armortoken":  "ARMOR_TOKEN",
+            "token":       "TOKEN",
+            "smdeviceid":  "SMDEVICE_ID",
+            "cookie":      "COOKIE",
+            "x-ad-flag":   "AD_FLAG",
+        }
+        if name in mapping and val:
+            found[mapping[name]] = val
+    return found
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CART CLEANUP QUEUE  (30-minute auto-cleanup safety net)
 # Tracks cart_ids added by the price checker so stale items are auto-deleted
 # even if the immediate post-checkout cleanup fails.
@@ -125,21 +160,21 @@ def headers(country: str = "PH", extra: dict = None) -> dict:
         "os-version":          "11",
         "platform":            "app-native",
         "siteuid":             "android",
-        "smdeviceid":          SMDEVICE_ID,
-        "armortoken":          ARMOR_TOKEN,
-        "token":               TOKEN,
-        "x-gw-auth":           GW_AUTH,
-        "x-cs-random":         CS_RANDOM,
-        "anti-in":             ANTI_IN,
-        "x-ad-flag":           AD_FLAG,
+        "smdeviceid":          _cred("SMDEVICE_ID"),
+        "armortoken":          _cred("ARMOR_TOKEN"),
+        "token":               _cred("TOKEN"),
+        "x-gw-auth":           _cred("GW_AUTH"),
+        "x-cs-random":         _cred("CS_RANDOM"),
+        "anti-in":             _cred("ANTI_IN"),
+        "x-ad-flag":           _cred("AD_FLAG"),
         "ugid":                UGID,
         "newuid":              SORTUID,
         "sortuid":             SORTUID,
         "usercountry":         country.upper(),
         "version":             APP_VERSION,
         "appversion":          APP_VERSION,
-        "cookie":              COOKIE,
-        "ruleids":             RULEIDS,
+        "cookie":              _cred("COOKIE"),
+        "ruleids":             _cred("RULEIDS"),
         "user-agent":          f"Shein {APP_VERSION} Android 11 {DEVICE_INFO} {APPCOUNTRY} en {SORTUID}",
         "accept-encoding":     "gzip",
         "uberctx-personal-switch": "u-1.r-1.s-1",
@@ -649,11 +684,8 @@ def _item_info_via_atc(goods_id: str, country: str) -> tuple:
                   or next((s["sku_code"] for s in sku_entries if s.get("sku_code")), "")
 
     if not first_sku:
-        # Can't get sku_code from any API — ask user to provide it manually
         return jsonify({
-            "error": "sku_required",
-            "goods_id": goods_id,
-            "message": f"Cannot auto-detect SKU for product #{goods_id}. Please enter the SKU code manually (found in SHEIN app product URL or share link)."
+            "error": "Credentials need refreshing. Open SHEIN app → view any product page → capture the request to api-service.shein.com/product/get_goods_detail_realtime_data → update GW_AUTH, ANTI_IN, CS_RANDOM, RULEIDS in Railway, then redeploy."
         }), 400
 
     # ── Step 2: ATC probe with known sku_code → get name, image, price
@@ -757,8 +789,10 @@ def item_info():
         # ── 836000 fallback: use add-to-cart probe to get basic product info
         # The ATC endpoint works even when product detail realtime is restricted.
         # We get name, image, price, sku — just no coupon data.
-        if shein_code == "836000" and ATC_GW_AUTH and ATC_ANTI_IN:
-            return _item_info_via_atc(goods_id, country)
+        if shein_code == "836000":
+            if ATC_GW_AUTH and ATC_ANTI_IN:
+                return _item_info_via_atc(goods_id, country)
+            return jsonify({"error": "Session expired. Please refresh GW_AUTH, ANTI_IN, CS_RANDOM, RULEIDS in Railway from a fresh SHEIN app product-detail capture."}), 400
 
         shein_msg = detail.get("msg") or detail.get("message") or ""
         return jsonify({"error": shein_msg or f"SHEIN API error (code={shein_code})"}), 400
@@ -1254,6 +1288,103 @@ def debug_product():
                     report["diagnosis"].append(f"❌ {s['step']}: code={code} — {s.get('shein_msg','')}")
 
     return jsonify(report)
+
+
+@app.route("/admin/refresh", methods=["GET", "POST"])
+def admin_refresh():
+    """
+    Credential refresh page.
+    GET:  Shows the paste form.
+    POST: Parses a raw HTTP request dump and updates in-memory credentials instantly.
+          No Railway redeploy needed — takes effect immediately for all products.
+    """
+    secret = os.environ.get("ADMIN_SECRET", "")
+
+    if request.method == "POST":
+        provided = (request.form.get("secret") or "").strip()
+        if secret and provided != secret:
+            return "<h2 style='font-family:monospace;color:red'>Wrong secret.</h2>", 403
+
+        raw = request.form.get("raw", "").strip()
+        if not raw:
+            return "<h2 style='font-family:monospace;color:red'>No data pasted.</h2>", 400
+
+        parsed = _parse_raw_headers(raw)
+        if not parsed:
+            return "<h2 style='font-family:monospace;color:red'>No headers found. Make sure you pasted the full raw HTTP request.</h2>", 400
+
+        updated = []
+        for k, v in parsed.items():
+            _live_creds[k] = v
+            updated.append(k)
+
+        # If this looks like a product-detail request, also set as ATC fallback
+        if "GW_AUTH" in parsed:
+            _live_creds["ATC_GW_AUTH"] = parsed["GW_AUTH"]
+        if "ANTI_IN" in parsed:
+            _live_creds["ATC_ANTI_IN"] = parsed["ANTI_IN"]
+
+        html = f"""<!DOCTYPE html><html><head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{{font-family:monospace;background:#0a0c10;color:#00ff88;padding:24px;max-width:600px;margin:0 auto}}
+h2{{color:#00ff88}}ul{{margin:12px 0}}li{{margin:4px 0}}
+a{{color:#00e5ff;text-decoration:none}}a:hover{{text-decoration:underline}}</style></head><body>
+<h2>✅ Credentials Updated</h2>
+<p>Updated {len(updated)} field(s) in memory:</p>
+<ul>{"".join(f"<li>{k}</li>" for k in updated)}</ul>
+<p style="color:#ffcc00">⚡ Takes effect immediately — no redeploy needed.</p>
+<p><a href="/">← Back to Price Checker</a> &nbsp;|&nbsp; <a href="/debug/product">Test it now</a></p>
+</body></html>"""
+        return html
+
+    # GET — show paste form
+    html = f"""<!DOCTYPE html><html><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Refresh Credentials</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:monospace;background:#0a0c10;color:#c8d4e0;padding:20px;min-height:100vh}}
+.wrap{{max-width:640px;margin:0 auto}}
+h1{{color:#00e5ff;font-size:18px;margin-bottom:4px}}
+p{{font-size:12px;color:#4a5568;margin-bottom:16px}}
+label{{font-size:12px;color:#00e5ff;display:block;margin-bottom:6px;letter-spacing:1px;text-transform:uppercase}}
+textarea{{width:100%;background:#040608;color:#8be9fd;border:1px solid #1e2530;border-radius:6px;padding:12px;font-size:11px;font-family:monospace;resize:vertical;min-height:220px;outline:none}}
+textarea:focus{{border-color:#00e5ff}}
+input[type=text]{{width:100%;background:#040608;color:#8be9fd;border:1px solid #1e2530;border-radius:6px;padding:10px 12px;font-size:12px;font-family:monospace;outline:none;margin-bottom:16px}}
+input[type=text]:focus{{border-color:#00e5ff}}
+button{{background:#00e5ff;color:#000;border:none;border-radius:6px;padding:12px 24px;font-size:13px;font-weight:700;cursor:pointer;width:100%;margin-top:12px;font-family:monospace}}
+button:hover{{background:#33ecff}}
+.steps{{background:#0f1218;border:1px solid #1e2530;border-radius:8px;padding:14px;margin-bottom:20px;font-size:12px;line-height:1.8}}
+.steps span{{color:#00e5ff}}
+a{{color:#4a5568;font-size:11px;display:block;margin-top:12px}}
+</style></head><body><div class="wrap">
+<h1>🔑 Refresh Credentials</h1>
+<p>Updates GW_AUTH, ANTI_IN, CS_RANDOM, RULEIDS instantly — no Railway redeploy needed.</p>
+<div class="steps">
+<span>How to capture:</span><br>
+1. Open SHEIN app → tap any product page<br>
+2. In your HTTP capture tool, find the request to:<br>
+&nbsp;&nbsp;<code style="color:#ffcc00">api-service.shein.com/product/get_goods_detail_realtime_data</code><br>
+3. Copy the <b>full raw request</b> (all headers + URL line)<br>
+4. Paste it below and click Refresh
+</div>
+{'<label>Admin Secret</label><input type="text" name="secret" form="rf" placeholder="Enter secret..." autocomplete="off">' if secret else ''}
+<form id="rf" method="POST">
+<input type="hidden" name="secret" value="">
+<label>Paste Raw HTTP Request</label>
+<textarea name="raw" placeholder="POST /product/get_goods_detail_realtime_data?... HTTP/2&#10;host: api-service.shein.com&#10;x-gw-auth: a=vhOvoN...&#10;anti-in: 2_4.2.3_...&#10;..."></textarea>
+<button type="submit">⚡ Refresh Credentials</button>
+</form>
+<a href="/">← Back to Price Checker</a>
+</div>
+<script>
+// Wire the secret input to the hidden form field
+const si = document.querySelector('input[name=secret]:not([type=hidden])');
+if(si) si.addEventListener('input', () => document.querySelector('input[name=secret][type=hidden]').value = si.value);
+</script>
+</body></html>"""
+    return html
 
 
 if __name__ == "__main__":
