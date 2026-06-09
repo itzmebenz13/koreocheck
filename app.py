@@ -144,7 +144,7 @@ def headers(country: str = "PH", extra: dict = None) -> dict:
         "app-from":            "shein",
         "appname":             "shein app",
         "apptype":             "shein",
-        "appcountry":          APPCOUNTRY,
+        "appcountry":          country.upper(),   # Use the actual country, not the capture country (was GB, causing 836000 for PH products)
         "appcurrency":         currency,
         "applanguage":         "en",
         "clientid":            "100",
@@ -174,8 +174,8 @@ def headers(country: str = "PH", extra: dict = None) -> dict:
         "version":             APP_VERSION,
         "appversion":          APP_VERSION,
         "cookie":              _cred("COOKIE"),
-        "ruleids":             _cred("RULEIDS"),
-        "user-agent":          f"Shein {APP_VERSION} Android 11 {DEVICE_INFO} {APPCOUNTRY} en {SORTUID}",
+        "ruleids":             "45950," + (_cred("RULEIDS") or RULEIDS),   # 45950 = PH access rule
+        "user-agent":          f"Shein {APP_VERSION} Android 11 {DEVICE_INFO} {country.upper()} en {SORTUID}",
         "accept-encoding":     "gzip",
         "uberctx-personal-switch": "u-1.r-1.s-1",
         "uberctx-traffic-mark-member": "26",
