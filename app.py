@@ -779,18 +779,18 @@ def do_checkout():
         if not gid:
             continue
 
+        dinfo = {}
         try:
             det   = api_product_detail(gid, country)
-            dinfo = det.get("info") or {}
-        except Exception as exc:
-            return jsonify({"error": f"Could not fetch product {gid}: {exc}"}), 502
-
-        if str(det.get("code")) != "0":
-            msg = det.get("msg") or f"code={det.get('code')}"
-            return jsonify({"error": f"Product {gid}: {msg}"}), 400
+            if str(det.get("code")) == "0":
+                dinfo = det.get("info") or {}
+            # If 836000, silently continue — use price from cart item below
+        except Exception:
+            pass   # Non-fatal — fall back to stored item price
 
         sale_raw   = dinfo.get("sale_price") or {}
-        sale_price = parse_amount(sale_raw)
+        # Use product detail price if available, otherwise use price stored in virtual cart
+        sale_price = parse_amount(sale_raw) or float(item.get("price") or 0)
         free_ship  = dinfo.get("isProductShippingFree") == "1"
         if not free_ship:
             all_free_ship = False
