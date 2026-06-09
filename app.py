@@ -267,23 +267,37 @@ def api_product_detail(goods_id: str, country: str = "PH") -> dict:
                     params=params, headers=headers(country), timeout=15, verify=False)
     result = resp.json()
 
-    # Retry once with minimal params if security validation failed
+    # Retry attempts when 836000 — try different mallCode values
     if str(result.get("code")) == "836000":
-        minimal = {
-            "goods_id":       goods_id,
-            "mallCode":       "1",
-            "sourceFrom":     "goods_detail",
-            "visitNumOfDay":  "1",
-            "isShowMall":     "0",
-            "isPaidMember":   "0",
-            "priorityMallType": "1",
-            "timeZone":       TIMEZONE_MAP.get(country.upper(), "Asia/Manila"),
-        }
-        resp2  = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
-                        params=minimal, headers=headers(country), timeout=15, verify=False)
-        result2 = resp2.json()
-        if str(result2.get("code")) == "0":
-            return result2
+        tz = TIMEZONE_MAP.get(country.upper(), "Asia/Manila")
+
+        for mall_code in ["0", "", "2"]:
+            attempt = dict(params)
+            attempt["mallCode"] = mall_code
+            attempt["isUserSelectedMallCode"] = "1" if mall_code else "0"
+            try:
+                r2 = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
+                            params=attempt, headers=headers(country),
+                            timeout=15, verify=False).json()
+                if str(r2.get("code")) == "0":
+                    return r2
+            except Exception:
+                pass
+
+        # Last resort: bare minimum params, no mallCode
+        try:
+            bare = {
+                "goods_id": goods_id, "sourceFrom": "goods_detail",
+                "visitNumOfDay": "1", "isShowMall": "1",
+                "isPaidMember": "0", "timeZone": tz,
+            }
+            r3 = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
+                        params=bare, headers=headers(country),
+                        timeout=15, verify=False).json()
+            if str(r3.get("code")) == "0":
+                return r3
+        except Exception:
+            pass
 
     return result
 
@@ -843,30 +857,49 @@ def debug_product():
         step("product_detail_full_params", "💥 EXCEPTION", msg=str(exc))
         r1 = {}; code1 = "exc"; info1 = {}
 
-    # ── Step 2: Product detail with minimal params (fallback)
+    # ── Step 2: Retry with different mallCode values
     if code1 != "0":
-        try:
-            params_min = {
-                "goods_id": goods_id, "mallCode": "1",
-                "sourceFrom": "goods_detail", "visitNumOfDay": "1",
-                "isShowMall": "0", "isPaidMember": "0",
-                "priorityMallType": "1",
-                "timeZone": TIMEZONE_MAP.get(country, "Asia/Manila"),
-            }
-            resp2 = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
-                           params=params_min, headers=headers(country),
-                           timeout=15, verify=False)
-            r2 = resp2.json()
-            code2 = str(r2.get("code", "?"))
-            if code2 == "0":
-                step("product_detail_minimal_params", "✅ OK (fallback worked)", code=code2)
-                info1 = r2.get("info") or {}
-            else:
-                step("product_detail_minimal_params", "❌ FAILED", code=code2,
-                     msg=r2.get("msg") or "",
-                     detail={"hint": "Both param sets failed. Likely product is region-locked or SHEIN changed validation."})
-        except Exception as exc:
-            step("product_detail_minimal_params", "💥 EXCEPTION", msg=str(exc))
+        tz = TIMEZONE_MAP.get(country, "Asia/Manila")
+        worked = False
+        for mall_code in ["0", "", "2"]:
+            label = f"retry_mallCode={repr(mall_code)}"
+            try:
+                attempt = dict(params_full)
+                attempt["mallCode"] = mall_code
+                attempt["isUserSelectedMallCode"] = "1" if mall_code else "0"
+                r2 = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
+                            params=attempt, headers=headers(country),
+                            timeout=15, verify=False).json()
+                code2 = str(r2.get("code", "?"))
+                if code2 == "0":
+                    step(label, f"✅ OK — mallCode={repr(mall_code)} worked!", code=code2)
+                    info1 = r2.get("info") or {}
+                    worked = True
+                    break
+                else:
+                    step(label, "❌ FAILED", code=code2, msg=r2.get("msg") or "")
+            except Exception as exc:
+                step(label, "💥 EXCEPTION", msg=str(exc))
+        if not worked:
+            try:
+                bare = {
+                    "goods_id": goods_id, "sourceFrom": "goods_detail",
+                    "visitNumOfDay": "1", "isShowMall": "1",
+                    "isPaidMember": "0", "timeZone": tz,
+                }
+                r3 = rq.get(f"{API_HOST}/product/get_goods_detail_realtime_data",
+                            params=bare, headers=headers(country),
+                            timeout=15, verify=False).json()
+                code3 = str(r3.get("code", "?"))
+                if code3 == "0":
+                    step("retry_bare_params", "✅ OK (bare params worked)", code=code3)
+                    info1 = r3.get("info") or {}
+                else:
+                    step("retry_bare_params", "❌ FAILED", code=code3,
+                         msg=r3.get("msg") or "",
+                         detail={"hint": "All param combinations failed — product may require different auth or is not available in this country."})
+            except Exception as exc:
+                step("retry_bare_params", "💥 EXCEPTION", msg=str(exc))
 
     # ── Step 3: Add-to-cart test (requires ATC creds)
     test_sku = ""
